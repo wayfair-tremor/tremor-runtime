@@ -50,6 +50,7 @@ hashbrown = {version = "0.11", features = ["serde"]}
 hostname = "0.3"
 http-types = "2.11"
 indexmap = {version = "1", features = ["serde-1"]}
+lapin = "1.6.8"
 lazy_static = "1"
 libflate = "1.1"
 log = "0.4"

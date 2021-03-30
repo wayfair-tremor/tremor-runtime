@@ -37,6 +37,7 @@ use tremor_script::prelude::*;
 
 use self::prelude::OnrampConfig;
 
+pub(crate) mod amqp;
 pub(crate) mod blaster;
 pub(crate) mod cb;
 pub(crate) mod crononome;
