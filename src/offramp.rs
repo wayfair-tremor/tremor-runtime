@@ -19,7 +19,7 @@ use crate::permge::PriorityMerge;
 use crate::pipeline;
 use crate::registry::ServantId;
 use crate::sink::{
-    self, blackhole, cb, debug, dns, elastic, exit, file, gcs, handle_response, kafka, kv, nats,
+    self, amqp, blackhole, cb, debug, dns, elastic, exit, file, gcs, handle_response, kafka, kv, nats,
     newrelic, otel, postgres, rest, stderr, stdout, tcp, udp, ws,
 };
 use crate::source::Processors;
@@ -108,6 +108,7 @@ pub trait Impl {
 #[cfg(not(tarpaulin_include))]
 pub fn lookup(name: &str, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
     match name {
+        "amqp" => amqp::Amqp::from_config(config),
         "blackhole" => blackhole::Blackhole::from_config(config),
         "cb" => cb::Cb::from_config(config),
         "debug" => debug::Debug::from_config(config),
