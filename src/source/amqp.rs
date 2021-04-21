@@ -1,6 +1,4 @@
-// Copyright 2021 Nokia
-// Licensed under the Apache License 2.0
-// SPDX-License-Identifier: Apache-2.0
+// Copyright 2020-2021, The Tremor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,17 +22,20 @@ use lapin::{
     options::*, types::FieldTable, Connection, ConnectionProperties, Consumer,
 };
 
+/*enum QueueProperties {
+    Durable 1
+    Exclusive 2
+    AutoDelete 4
+    NoWait 8
+}*/
 #[derive(Deserialize, Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     pub amqp_addr: String,
     queue_name: String,
+    queue_options: QueueDeclareOptions,
     routing_key: String,
-    exchange: String,  // "egress_exchange", by default
-    durable: bool,     // False, by default
-    exclusive: bool,   // False, by default
-    auto_delete: bool, // True by default
-    no_wait: bool,     // True by default 
-    with_ack: bool,     // False, by default
+    exchange: String,  // "", by default
     #[serde(default = "Default::default")]
     pub close_on_done: bool,
     #[serde(default = "Default::default")]
@@ -43,7 +44,7 @@ pub struct Config {
 
 impl ConfigImpl for Config {}
 
-pub struct AMQP {
+pub struct Amqp {
     pub config: Config,
     onramp_id: TremorUrl,
 }
@@ -64,7 +65,7 @@ impl std::fmt::Debug for Int {
     }
 }
 
-impl onramp::Impl for AMQP {
+impl onramp::Impl for Amqp {
     fn from_config(id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
@@ -73,7 +74,7 @@ impl onramp::Impl for AMQP {
                 onramp_id: id.clone(),
             }))
         } else {
-            Err("Missing config for AMQP onramp".into())
+            Err("Missing config for Amqp onramp".into())
         }
     }
 }
@@ -91,7 +92,7 @@ impl Int {
         Self {
             uid,
             config: config.clone(),
-            amqp_url: amqp_url,
+            amqp_url,
             onramp_id,
             consumer: None,
             origin_uri,
@@ -100,9 +101,9 @@ impl Int {
     }
 }
 
-impl std::fmt::Debug for AMQP {
+impl std::fmt::Debug for Amqp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AMQP")
+        write!(f, "Amqp")
     }
 }
 
@@ -121,16 +122,12 @@ impl Source for Int {
         &self.onramp_id
     }
     async fn pull_event(&mut self, _id: u64) -> Result<SourceReply> {
-        /*let c = match self.consumer {
-            Some(consumer) => consumer,
-            None => return Ok(SourceReply::StateChange(SourceState::Disconnected))
-        };*/
         if self.consumer.is_none() {
             return Ok(SourceReply::StateChange(SourceState::Disconnected))
         }
         if let Some(delivery) = self.consumer.as_mut().unwrap().next().await {
             let (_, delivery) = delivery.expect("error in consumer");
-            // TODO: not sure what to do with ack result ... we got the message
+            // TODO: not sure what to do with _ack_result ... we got the ack acked
             let _ack_result = delivery.ack(BasicAckOptions::default()).await?;
             let data = delivery.data;
             let mut origin_uri = self.origin_uri.clone();
@@ -173,17 +170,20 @@ impl Source for Int {
 
         let channel = conn.create_channel().await?;
 
-        let queue_options = QueueDeclareOptions {
-            passive: true,
-            durable: self.config.durable,
-            exclusive: self.config.exclusive,
-            auto_delete: self.config.auto_delete,
-            nowait: self.config.no_wait,
-        };
         channel
             .queue_declare(
-                &self.config.queue_name,
-                queue_options,
+                self.config.queue_name.as_str(),
+                self.config.queue_options,
+                FieldTable::default(),
+            )
+            .await?;
+        
+        channel
+            .queue_bind(
+                self.config.queue_name.as_str(),
+                self.config.exchange.as_str(),
+                self.config.routing_key.as_str(),
+                QueueBindOptions::default(),
                 FieldTable::default(),
             )
             .await?;
@@ -225,7 +225,7 @@ impl Source for Int {
 }
 
 #[async_trait::async_trait]
-impl Onramp for AMQP {
+impl Onramp for Amqp {
     async fn start(&mut self, config: OnrampConfig<'_>) -> Result<onramp::Addr> {
         let source = Int::from_config(config.onramp_uid, self.onramp_id.clone(), &self.config);
         SourceManager::start(source, config).await

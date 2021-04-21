@@ -70,7 +70,7 @@ pub(crate) fn lookup(
     config: &Option<Value>,
 ) -> Result<Box<dyn Onramp>> {
     match name {
-        "amqp" => amqp::AMQP::from_config(id, config),
+        "amqp" => amqp::Amqp::from_config(id, config),
         "blaster" => blaster::Blaster::from_config(id, config),
         "cb" => cb::Cb::from_config(id, config),
         "file" => file::File::from_config(id, config),
