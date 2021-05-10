@@ -8,6 +8,7 @@
 - Add `HEALTHCHECK` to Dockerfiles
 - Improve printing for dot files
 - Scan sub directories of ${CFG_DIR} for config files.
+- Add offramp and onramp for [AMQP](https://www.amqp.org) with the [lapin](https://docs.rs/lapin/1.6.8/lapin/) package.
 
 ### Fixes
 
