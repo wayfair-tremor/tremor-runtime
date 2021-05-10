@@ -36,7 +36,7 @@ pub struct Config {
     pub amqp_addr: String,
     routing_key: String,
     exchange: String,  // "", by default
-    //publish_options: BasicPublishOptions,
+    publish_options: BasicPublishOptions,
     #[serde(default = "Default::default")]
     pub close_on_done: bool,
     #[serde(default = "Default::default")]
@@ -172,7 +172,7 @@ impl Sink for Amqp {
                     let publish_result = channel.basic_publish(
                         self.config.exchange.as_str(),
                         self.config.routing_key.as_str(),
-                        BasicPublishOptions::default(),
+                        self.config.publish_options,
                         payload,
                         properties,
                     )
