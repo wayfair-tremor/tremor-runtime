@@ -34,12 +34,10 @@ pub struct Config {
     pub amqp_addr: String,
     queue_name: String,
     queue_options: QueueDeclareOptions,
+    #[serde(default = "Default::default")]
     routing_key: String,
-    exchange: String,  // "", by default
     #[serde(default = "Default::default")]
-    pub close_on_done: bool,
-    #[serde(default = "Default::default")]
-    pub sleep_on_done: u64,
+    exchange: String,
 }
 
 impl ConfigImpl for Config {}
@@ -80,8 +78,11 @@ impl onramp::Impl for Amqp {
 }
 
 impl Int {
-    fn from_config(uid: u64, onramp_id: TremorUrl, config: &Config) -> Self {
-        let amqp_url = Url::parse(&config.amqp_addr).unwrap();
+    async fn from_config(uid: u64, onramp_id: TremorUrl, config: &Config) -> Result<Self> {
+        let amqp_url = match Url::parse(&config.amqp_addr) {
+            Ok(amqp_url) => amqp_url,
+            Err(e) => return Err(format!("Amqp url can't be parsed {}", e).into()),
+        };
         let origin_uri = EventOriginUri {
             uid,
             scheme: "amqp".to_string(),
@@ -89,7 +90,7 @@ impl Int {
             port: None,
             path: vec![],
         };
-        Self {
+        Ok(Self {
             uid,
             config: config.clone(),
             amqp_url,
@@ -97,7 +98,7 @@ impl Int {
             consumer: None,
             origin_uri,
             with_ack: false,
-        }
+        })
     }
 }
 
@@ -122,27 +123,32 @@ impl Source for Int {
         &self.onramp_id
     }
     async fn pull_event(&mut self, _id: u64) -> Result<SourceReply> {
-        if self.consumer.is_none() {
-            return Ok(SourceReply::StateChange(SourceState::Disconnected))
-        }
-        if let Some(delivery) = self.consumer.as_mut().unwrap().next().await {
-            let (_, delivery) = delivery.expect("error in consumer");
-            // TODO: not sure what to do with _ack_result ... we got the ack acked
-            let _ack_result = delivery.ack(BasicAckOptions::default()).await?;
-            let data = delivery.data;
-            let mut origin_uri = self.origin_uri.clone();
-            origin_uri.path = vec![
-                delivery.routing_key.to_string(),
-            ];
-            Ok(SourceReply::Data{
-                        origin_uri,
-                        data,
-                        meta: None, // TODO: what can we put in meta here?
-                        codec_override: None,
-                        stream: 0,
-                    })
-        } else {
-            Ok(SourceReply::StateChange(SourceState::Disconnected))
+        match self.consumer.as_mut() {
+            None => Ok(SourceReply::StateChange(SourceState::Disconnected)),
+            Some(consumer) => {
+                match consumer.next().await {
+                    Some(delivery) => {
+                        let (_, delivery) = delivery.expect("error in consumer");
+                        // TODO: not sure what to do with _ack_result ... we got the ack acked
+                        let _ack_result = delivery.ack(BasicAckOptions::default()).await?;
+                        let data = delivery.data;
+                        let mut origin_uri = self.origin_uri.clone();
+                        origin_uri.path = vec![
+                            delivery.routing_key.to_string(),
+                        ];
+                        Ok(SourceReply::Data{
+                                    origin_uri,
+                                    data,
+                                    meta: None, // TODO: what can we put in meta here?
+                                    codec_override: None,
+                                    stream: 0,
+                                })
+                    }
+                    None => {
+                        Ok(SourceReply::StateChange(SourceState::Disconnected))
+                    }
+                }
+            }
         }
     }
     async fn init(&mut self) -> Result<SourceState> {
@@ -227,7 +233,12 @@ impl Source for Int {
 #[async_trait::async_trait]
 impl Onramp for Amqp {
     async fn start(&mut self, config: OnrampConfig<'_>) -> Result<onramp::Addr> {
-        let source = Int::from_config(config.onramp_uid, self.onramp_id.clone(), &self.config);
+        let source = Int::from_config(
+            config.onramp_uid, 
+            self.onramp_id.clone(), 
+            &self.config
+        )
+        .await?;
         SourceManager::start(source, config).await
     }
     fn default_codec(&self) -> &str {

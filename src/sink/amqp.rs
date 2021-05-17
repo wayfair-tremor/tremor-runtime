@@ -23,7 +23,7 @@ use async_channel::{bounded, Receiver};
 use serde::{Deserialize};
 use crate::url::TremorUrl;
 use lapin::{
-    options::*, Connection, ConnectionProperties, Channel, BasicProperties, publisher_confirm::Confirmation
+    options::*, Connection, ConnectionProperties, Channel, BasicProperties, PromiseChain, publisher_confirm::Confirmation
 };
 use halfbrown::HashMap;
 use std::{
@@ -34,29 +34,24 @@ use std::{
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     pub amqp_addr: String,
+    #[serde(default = "Default::default")]
     routing_key: String,
-    exchange: String,  // "", by default
+    #[serde(default = "Default::default")]
+    exchange: String,
     publish_options: BasicPublishOptions,
-    #[serde(default = "Default::default")]
-    pub close_on_done: bool,
-    #[serde(default = "Default::default")]
-    pub sleep_on_done: u64,
     // headers to use for the messages
     #[serde(default = "Default::default")]
     pub headers: HashMap<String, Vec<String>>,
 }
 
 impl Config {
-    fn channel(&self) -> Result<Channel> {
-        task::block_on(async {
-            let connection = Connection::connect(
-                    &self.amqp_addr,
-                    ConnectionProperties::default(),
-                )
-                .await?;
-            let channel = connection.create_channel().await?;
-            Ok(channel)
-        })
+    async fn channel(&self) -> PromiseChain<Channel> {
+        match Connection::connect(&self.amqp_addr, ConnectionProperties::default()).await {
+            Ok(connection) => {
+                connection.create_channel()
+            }
+            Err(error) => PromiseChain::new_with_data(Err(error)),
+        }
     }
 }
 
@@ -101,12 +96,15 @@ impl offramp::Impl for Amqp {
 }
 
 impl Amqp {
-    fn handle_channel(&mut self) -> Result<Option<&Channel>> {
+    async fn handle_channel(&mut self) -> Result<Option<&Channel>> {
         while let Ok(()) = self.error_rx.try_recv() {
             self.channel = None;
         }
         if self.channel.is_none() {
-            self.channel = Some(self.config.channel()?);
+            match self.config.channel().await.await {
+                Ok(channel) => self.channel = Some(channel),
+                Err(error) => return Err(error.into()),
+            }
             return Ok(self.channel.as_ref());
         }
         Ok(None)
@@ -122,7 +120,7 @@ impl Sink for Amqp {
         _codec_map: &HashMap<String, Box<dyn Codec>>,
         mut event: Event,
     ) -> ResultVec {
-        self.handle_channel()?;
+        self.handle_channel().await?;
         let ingest_ns = event.ingest_ns;
         let processing_start = Instant::now();
         /*
@@ -233,7 +231,7 @@ impl Sink for Amqp {
         _is_linked: bool,
         reply_channel: Sender<Reply>,
     ) -> Result<()> {
-        self.channel = Some(self.config.channel()?);
+        self.handle_channel().await?;
         self.postprocessors = make_postprocessors(processors.post)?;
         self.reply_channel = reply_channel;
         self.sink_url = sink_url.clone();
@@ -251,9 +249,10 @@ impl Sink for Amqp {
         false
     }
     async fn terminate(&mut self) {
-        let channel = self.channel.as_ref().unwrap();
-        let _res_close = channel.close(0, "terminating sink");
-        let _res_confirms = channel.wait_for_confirms();
+        if let Some(channel) = self.channel.as_ref() {
+            let _res_close = channel.close(0, "terminating sink");
+            let _res_confirms = channel.wait_for_confirms();
+        }
         /*if self.channel.in_flight_count() > 0 {
             // wait a second in order to flush messages.
             let wait_secs = 1;
