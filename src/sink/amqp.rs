@@ -23,8 +23,8 @@ use crate::url::TremorUrl;
 use async_channel::{bounded, Receiver};
 use halfbrown::HashMap;
 use lapin::{
-    options::*, publisher_confirm::Confirmation, BasicProperties, Channel, Connection,
-    ConnectionProperties, PromiseChain,
+    options::BasicPublishOptions, publisher_confirm::Confirmation, BasicProperties, Channel,
+    Connection, ConnectionProperties, PromiseChain,
 };
 use serde::Deserialize;
 use std::{fmt, time::Instant};
@@ -192,15 +192,16 @@ impl Sink for Amqp {
                             }
                         }
                         Confirmation::Nack(err) => {
-                            match err {
-                                Some(e) => error!(
+                            if let Some(e) = err {
+                                error!(
                                     "[Sink::{}] failed to send message: {} {}",
                                     &self.sink_url, e.reply_code, e.reply_text
-                                ),
-                                None => error!(
+                                )
+                            } else {
+                                error!(
                                     "[Sink::{}] failed to send message: unknown error",
                                     &self.sink_url
-                                ),
+                                )
                             }
                             if self.error_tx.send(()).await.is_err() {
                                 error!(

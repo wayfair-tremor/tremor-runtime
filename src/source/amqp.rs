@@ -16,7 +16,11 @@
 use crate::errors::Error;
 use crate::source::prelude::*;
 use crate::url::TremorUrl;
-use lapin::{options::*, types::FieldTable, Connection, ConnectionProperties, Consumer};
+use lapin::{
+    options::{BasicAckOptions, BasicConsumeOptions, QueueBindOptions, QueueDeclareOptions},
+    types::FieldTable,
+    Connection, ConnectionProperties, Consumer,
+};
 use serde::Deserialize;
 use url::Url;
 
@@ -162,12 +166,12 @@ impl Source for Int {
             scheme: self.amqp_url.scheme().to_string(),
             host: match self.amqp_url.host_str() {
                 Some(h) => h.to_string(),
-                _ => "".to_string(),
+                None => "".to_string(),
             },
             port: self.amqp_url.port(),
             path: match self.amqp_url.path_segments() {
                 Some(pathvec) => pathvec.map(|x| String::from(x)).collect::<Vec<String>>(),
-                _ => vec![],
+                None => vec![],
             },
         };
 
