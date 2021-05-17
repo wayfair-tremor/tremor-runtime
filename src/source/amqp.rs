@@ -170,7 +170,7 @@ impl Source for Int {
             },
             port: self.amqp_url.port(),
             path: match self.amqp_url.path_segments() {
-                Some(pathvec) => pathvec.map(|x| String::from(x)).collect::<Vec<String>>(),
+                Some(pathvec) => pathvec.map(String::from).collect::<Vec<String>>(),
                 None => vec![],
             },
         };

@@ -182,6 +182,9 @@ impl Sink for Amqp {
                             if event.transactional {
                                 let mut insight = insight_event.clone();
                                 insight.cb = CbAction::Ack;
+                                // we hopefully enver wait more then u64 ... if we do we got
+                                // bigger problems
+                                #[allow(clippy::cast_possible_truncation)]
                                 let time = processing_start.elapsed().as_millis() as u64;
                                 let mut m = Object::with_capacity(1);
                                 m.insert("time".into(), time.into());
