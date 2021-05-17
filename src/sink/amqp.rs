@@ -257,8 +257,12 @@ impl Sink for Amqp {
     }
     async fn terminate(&mut self) {
         if let Some(channel) = self.channel.as_ref() {
-            let _res_close = channel.close(0, "terminating sink");
-            let _res_confirms = channel.wait_for_confirms();
+            if let Err(e) = channel.close(0, "terminating sink").await {
+                error!("[Sink] Failed to close channel: {}", e);
+            }
+            if let Err(e) = channel.wait_for_confirms().await {
+                error!("[Sink] Failed to close channel: {}", e);
+            };
         }
         /*if self.channel.in_flight_count() > 0 {
             // wait a second in order to flush messages.

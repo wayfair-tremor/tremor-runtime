@@ -136,9 +136,9 @@ impl Source for Int {
             Some(consumer) => {
                 match consumer.next().await {
                     Some(delivery) => {
-                        let (_, delivery) = delivery.expect("error in consumer");
+                        let (_, delivery) = delivery?;
                         // TODO: not sure what to do with _ack_result ... we got the ack acked
-                        let _ack_result = delivery.ack(BasicAckOptions::default()).await?;
+                        delivery.ack(BasicAckOptions::default()).await?;
                         let data = delivery.data;
                         let mut origin_uri = self.origin_uri.clone();
                         origin_uri.path = vec![delivery.routing_key.to_string()];
