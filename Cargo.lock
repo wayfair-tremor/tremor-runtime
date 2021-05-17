@@ -151,7 +151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f843ece1f9a66cebbccf4162b5505e96e93598d3b2678ac56ad19d60642bd45"
 dependencies = [
  "percent-encoding 2.1.0",
- "url 2.2.1",
+ "url 2.2.2",
 ]
 
 [[package]]
@@ -2949,7 +2949,7 @@ dependencies = [
  "crossbeam-channel 0.5.0",
  "futures-core",
  "log",
- "mio 0.7.8",
+ "mio 0.7.11",
  "parking_lot 0.11.1",
  "pinky-swear",
  "serde",
@@ -5580,7 +5580,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04c180af0da0f0a75ca080465175892fcdaa750076f125cb953127721e676413"
 dependencies = [
  "cfg-if 1.0.0",
- "mio 0.7.8",
+ "mio 0.7.11",
  "native-tls",
  "pem",
 ]
