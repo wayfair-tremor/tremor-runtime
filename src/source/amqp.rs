@@ -81,7 +81,7 @@ impl Int {
     async fn from_config(uid: u64, onramp_id: TremorUrl, config: &Config) -> Result<Self> {
         let amqp_url = match Url::parse(&config.amqp_addr) {
             Ok(amqp_url) => amqp_url,
-            Err(e) => return Err(format!("Amqp url can't be parsed {}", e).into()),
+            Err(e) => return Err(format!("amqp_addr can't be parsed as url, {}: {}", e, &config.amqp_addr).into()),
         };
         let origin_uri = EventOriginUri {
             uid,
