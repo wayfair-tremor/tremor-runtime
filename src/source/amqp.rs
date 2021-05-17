@@ -13,14 +13,12 @@
 // limitations under the License.
 #![cfg(not(tarpaulin_include))]
 
-use crate::source::prelude::*;
-use serde::{Deserialize};
-use crate::url::TremorUrl;
-use url::Url;
 use crate::errors::Error;
-use lapin::{
-    options::*, types::FieldTable, Connection, ConnectionProperties, Consumer,
-};
+use crate::source::prelude::*;
+use crate::url::TremorUrl;
+use lapin::{options::*, types::FieldTable, Connection, ConnectionProperties, Consumer};
+use serde::Deserialize;
+use url::Url;
 
 /*enum QueueProperties {
     Durable 1
@@ -81,7 +79,13 @@ impl Int {
     async fn from_config(uid: u64, onramp_id: TremorUrl, config: &Config) -> Result<Self> {
         let amqp_url = match Url::parse(&config.amqp_addr) {
             Ok(amqp_url) => amqp_url,
-            Err(e) => return Err(format!("amqp_addr can't be parsed as url, {}: {}", e, &config.amqp_addr).into()),
+            Err(e) => {
+                return Err(format!(
+                    "amqp_addr can't be parsed as url, {}: {}",
+                    e, &config.amqp_addr
+                )
+                .into())
+            }
         };
         let origin_uri = EventOriginUri {
             uid,
@@ -133,44 +137,37 @@ impl Source for Int {
                         let _ack_result = delivery.ack(BasicAckOptions::default()).await?;
                         let data = delivery.data;
                         let mut origin_uri = self.origin_uri.clone();
-                        origin_uri.path = vec![
-                            delivery.routing_key.to_string(),
-                        ];
-                        Ok(SourceReply::Data{
-                                    origin_uri,
-                                    data,
-                                    meta: None, // TODO: what can we put in meta here?
-                                    codec_override: None,
-                                    stream: 0,
-                                })
+                        origin_uri.path = vec![delivery.routing_key.to_string()];
+                        Ok(SourceReply::Data {
+                            origin_uri,
+                            data,
+                            meta: None, // TODO: what can we put in meta here?
+                            codec_override: None,
+                            stream: 0,
+                        })
                     }
-                    None => {
-                        Ok(SourceReply::StateChange(SourceState::Disconnected))
-                    }
+                    None => Ok(SourceReply::StateChange(SourceState::Disconnected)),
                 }
             }
         }
     }
     async fn init(&mut self) -> Result<SourceState> {
-        let conn = Connection::connect(
-            &self.config.amqp_addr,
-            ConnectionProperties::default(),
-        )
-        .await?;
+        let conn =
+            Connection::connect(&self.config.amqp_addr, ConnectionProperties::default()).await?;
 
         info!("[amqp] connected {}", self.config.amqp_addr);
 
         self.origin_uri = EventOriginUri {
-            uid:    self.uid,
+            uid: self.uid,
             scheme: self.amqp_url.scheme().to_string(),
-            host:   match self.amqp_url.host_str() {
+            host: match self.amqp_url.host_str() {
                 Some(h) => h.to_string(),
-                _ => "".to_string()
+                _ => "".to_string(),
             },
-            port:   self.amqp_url.port(),
-            path:   match self.amqp_url.path_segments() {
+            port: self.amqp_url.port(),
+            path: match self.amqp_url.path_segments() {
                 Some(pathvec) => pathvec.map(|x| String::from(x)).collect::<Vec<String>>(),
-                _ => vec![]
+                _ => vec![],
             },
         };
 
@@ -183,7 +180,6 @@ impl Source for Int {
                 FieldTable::default(),
             )
             .await?;
-        
         channel
             .queue_bind(
                 self.config.queue_name.as_str(),
@@ -193,18 +189,19 @@ impl Source for Int {
                 FieldTable::default(),
             )
             .await?;
-        
-        self.consumer = match channel.basic_consume(
-            &self.config.queue_name,
-            "tremor",
-            BasicConsumeOptions::default(),
-            FieldTable::default(),
-        )
-        .await {
+
+        self.consumer = match channel
+            .basic_consume(
+                &self.config.queue_name,
+                "tremor",
+                BasicConsumeOptions::default(),
+                FieldTable::default(),
+            )
+            .await
+        {
             Ok(consumer) => Some(consumer),
-            Err(_) => return Ok(SourceState::Disconnected)
+            Err(_) => return Ok(SourceState::Disconnected),
         };
-        
         Ok(SourceState::Connected)
     }
     fn trigger_breaker(&mut self) {}
@@ -233,12 +230,8 @@ impl Source for Int {
 #[async_trait::async_trait]
 impl Onramp for Amqp {
     async fn start(&mut self, config: OnrampConfig<'_>) -> Result<onramp::Addr> {
-        let source = Int::from_config(
-            config.onramp_uid, 
-            self.onramp_id.clone(), 
-            &self.config
-        )
-        .await?;
+        let source =
+            Int::from_config(config.onramp_uid, self.onramp_id.clone(), &self.config).await?;
         SourceManager::start(source, config).await
     }
     fn default_codec(&self) -> &str {

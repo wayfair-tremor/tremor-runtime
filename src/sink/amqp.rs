@@ -19,17 +19,15 @@
 //! The `amqp` offramp allows producing events to an amqp broker.
 
 use crate::sink::prelude::*;
-use async_channel::{bounded, Receiver};
-use serde::{Deserialize};
 use crate::url::TremorUrl;
-use lapin::{
-    options::*, Connection, ConnectionProperties, Channel, BasicProperties, PromiseChain, publisher_confirm::Confirmation
-};
+use async_channel::{bounded, Receiver};
 use halfbrown::HashMap;
-use std::{
-    fmt,
-    time::{Instant},
+use lapin::{
+    options::*, publisher_confirm::Confirmation, BasicProperties, Channel, Connection,
+    ConnectionProperties, PromiseChain,
 };
+use serde::Deserialize;
+use std::{fmt, time::Instant};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
@@ -47,9 +45,7 @@ pub struct Config {
 impl Config {
     async fn channel(&self) -> PromiseChain<Channel> {
         match Connection::connect(&self.amqp_addr, ConnectionProperties::default()).await {
-            Ok(connection) => {
-                connection.create_channel()
-            }
+            Ok(connection) => connection.create_channel(),
             Err(error) => PromiseChain::new_with_data(Err(error)),
         }
     }
@@ -70,7 +66,11 @@ pub struct Amqp {
 
 impl fmt::Debug for Amqp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "[Sink::{}] RoutingKey: {}", &self.sink_url, self.config.routing_key)
+        write!(
+            f,
+            "[Sink::{}] RoutingKey: {}",
+            &self.sink_url, self.config.routing_key
+        )
     }
 }
 
@@ -105,9 +105,9 @@ impl Amqp {
                 Ok(channel) => self.channel = Some(channel),
                 Err(error) => return Err(error.into()),
             }
-            return Ok(self.channel.as_ref())
+            return Ok(self.channel.as_ref());
         } else {
-            return Ok(self.channel.as_ref())
+            return Ok(self.channel.as_ref());
         }
     }
 }
@@ -168,14 +168,16 @@ impl Sink for Amqp {
                         Some(Headers::from_iter(key_val))
                     };
                     */
-                    let publish_result = channel.basic_publish(
-                        self.config.exchange.as_str(),
-                        self.config.routing_key.as_str(),
-                        self.config.publish_options,
-                        payload,
-                        properties,
-                    )
-                    .await?.await?;
+                    let publish_result = channel
+                        .basic_publish(
+                            self.config.exchange.as_str(),
+                            self.config.routing_key.as_str(),
+                            self.config.publish_options,
+                            payload,
+                            properties,
+                        )
+                        .await?
+                        .await?;
 
                     match publish_result {
                         Confirmation::NotRequested | Confirmation::Ack(_) => {
@@ -190,13 +192,18 @@ impl Sink for Amqp {
                                     .send(sink::Reply::Insight(insight.clone()))
                                     .await?;
                             }
-                        },
+                        }
                         Confirmation::Nack(err) => {
                             match err {
-                                Some(e) => error!("[Sink::{}] failed to send message: {} {}", &self.sink_url, e.reply_code, e.reply_text),
-                                None => error!("[Sink::{}] failed to send message: unknown error", &self.sink_url),
+                                Some(e) => error!(
+                                    "[Sink::{}] failed to send message: {} {}",
+                                    &self.sink_url, e.reply_code, e.reply_text
+                                ),
+                                None => error!(
+                                    "[Sink::{}] failed to send message: unknown error",
+                                    &self.sink_url
+                                ),
                             }
-                            
                             if self.error_tx.send(()).await.is_err() {
                                 error!(
                                     "[Sink::{}] Error notifying the system about amqp error",
@@ -210,7 +217,7 @@ impl Sink for Amqp {
                                     .send(sink::Reply::Response(ERR, insight))
                                     .await?;
                             }
-                        },
+                        }
                     }
                 }
             }
