@@ -105,10 +105,8 @@ impl Amqp {
                 Ok(channel) => self.channel = Some(channel),
                 Err(error) => return Err(error.into()),
             }
-            return Ok(self.channel.as_ref());
-        } else {
-            return Ok(self.channel.as_ref());
         }
+        return Ok(self.channel.as_ref());
     }
 }
 

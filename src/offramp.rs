@@ -19,8 +19,8 @@ use crate::permge::PriorityMerge;
 use crate::pipeline;
 use crate::registry::ServantId;
 use crate::sink::{
-    self, amqp, blackhole, cb, debug, dns, elastic, exit, file, gcs, handle_response, kafka, kv, nats,
-    newrelic, otel, postgres, rest, stderr, stdout, tcp, udp, ws,
+    self, amqp, blackhole, cb, debug, dns, elastic, exit, file, gcs, handle_response, kafka, kv,
+    nats, newrelic, otel, postgres, rest, stderr, stdout, tcp, udp, ws,
 };
 use crate::source::Processors;
 use crate::url::ports::{IN, METRICS};

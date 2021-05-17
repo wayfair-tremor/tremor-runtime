@@ -17,8 +17,8 @@ use crate::pipeline;
 use crate::repository::ServantId;
 use crate::source::prelude::*;
 use crate::source::{
-    amqp, blaster, cb, crononome, discord, file, kafka, metronome, nats, otel, postgres, rest, stdin,
-    tcp, udp, ws,
+    amqp, blaster, cb, crononome, discord, file, kafka, metronome, nats, otel, postgres, rest,
+    stdin, tcp, udp, ws,
 };
 use crate::url::TremorUrl;
 use async_std::task::{self, JoinHandle};
