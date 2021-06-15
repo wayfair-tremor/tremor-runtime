@@ -94,7 +94,7 @@ pub(crate) type OffRampVec = Vec<OffRamp>;
 pub(crate) type BindingVec = config::BindingVec;
 pub(crate) type MappingMap = config::MappingMap;
 
-pub(crate) use crate::config::{Binding, OffRamp, OnRamp};
+pub(crate) use crate::config::{Binding, Connector, OffRamp, OnRamp};
 use crate::repository::BindingArtefact;
 use crate::url::TremorUrl;
 pub(crate) use serde_yaml::Value as OpConfig;
@@ -106,48 +106,6 @@ use tremor_script::Script;
 
 /// Default Q Size
 pub const QSIZE: usize = 128;
-
-/// In incarnated config
-#[derive(Debug)]
-pub struct IncarnatedConfig {
-    /// Onramps
-    pub onramps: OnRampVec,
-    /// Offramps
-    pub offramps: OffRampVec,
-    /// Bindings
-    pub bindings: BindingVec,
-    /// Mappings
-    pub mappings: MappingMap,
-}
-
-/// Incarnates a configuration into it's runnable state
-///
-/// # Errors
-///  * if the pipeline can not be incarnated
-pub fn incarnate(config: config::Config) -> Result<IncarnatedConfig> {
-    let onramps = incarnate_onramps(config.onramp.clone());
-    let offramps = incarnate_offramps(config.offramp.clone());
-    let bindings = incarnate_links(&config.binding);
-    Ok(IncarnatedConfig {
-        onramps,
-        offramps,
-        bindings,
-        mappings: config.mapping,
-    })
-}
-
-// TODO: what the heck do we need this for?
-fn incarnate_onramps(config: config::OnRampVec) -> OnRampVec {
-    config.into_iter().collect()
-}
-
-fn incarnate_offramps(config: config::OffRampVec) -> OffRampVec {
-    config.into_iter().collect()
-}
-
-fn incarnate_links(config: &[Binding]) -> BindingVec {
-    config.to_owned()
-}
 
 /// Loads a tremor query file
 /// # Errors
@@ -206,22 +164,21 @@ pub async fn load_cfg_file(world: &World, file_name: &str) -> Result<usize> {
     let file = tremor_common::file::open(file_name)?;
     let buffered_reader = BufReader::new(file);
     let config: config::Config = serde_yaml::from_reader(buffered_reader)?;
-    let config = crate::incarnate(config)?;
 
-    for o in config.offramps {
+    for o in config.offramp {
         let id = TremorUrl::parse(&format!("/offramp/{}", o.id))?;
         info!("Loading {} from file.", id);
         world.repo.publish_offramp(&id, false, o).await?;
         count += 1;
     }
 
-    for o in config.onramps {
+    for o in config.onramp {
         let id = TremorUrl::parse(&format!("/onramp/{}", o.id))?;
         info!("Loading {} from file.", id);
         world.repo.publish_onramp(&id, false, o).await?;
         count += 1;
     }
-    for binding in config.bindings {
+    for binding in config.binding {
         let id = TremorUrl::parse(&format!("/binding/{}", binding.id))?;
         info!("Loading {} from file.", id);
         world
@@ -237,7 +194,7 @@ pub async fn load_cfg_file(world: &World, file_name: &str) -> Result<usize> {
             .await?;
         count += 1;
     }
-    for (binding, mapping) in config.mappings {
+    for (binding, mapping) in config.mapping {
         world.link_binding(&binding, mapping).await?;
         count += 1;
     }
@@ -246,7 +203,6 @@ pub async fn load_cfg_file(world: &World, file_name: &str) -> Result<usize> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use crate::config;
     use serde_yaml;
     use std::io::BufReader;
@@ -261,20 +217,16 @@ mod test {
     #[test]
     fn load_simple_deploys() {
         let config = slurp("tests/configs/deploy.simple.yaml");
-        println!("{:?}", config);
-        let runtime = incarnate(config).expect("Failed to incarnate config");
-        assert_eq!(1, runtime.onramps.len());
-        assert_eq!(1, runtime.offramps.len());
-        assert_eq!(0, runtime.bindings.len());
+        assert_eq!(1, config.onramp.len());
+        assert_eq!(1, config.offramp.len());
+        assert_eq!(0, config.binding.len());
     }
 
     #[test]
     fn load_passthrough_stream() {
         let config = slurp("tests/configs/ut.passthrough.yaml");
-        println!("{:?}", &config);
-        let runtime = incarnate(config).expect("Failed to incarnate config");
-        assert_eq!(1, runtime.onramps.len());
-        assert_eq!(1, runtime.offramps.len());
-        assert_eq!(2, runtime.bindings[0].links.len());
+        assert_eq!(1, config.onramp.len());
+        assert_eq!(1, config.offramp.len());
+        assert_eq!(2, config.binding[0].links.len());
     }
 }

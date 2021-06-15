@@ -39,7 +39,7 @@
 use crate::errors::{ErrorKind, Result};
 use crate::lifecycle::{ActivationState, ActivatorLifecycleFsm};
 use crate::repository::{
-    Artefact, ArtefactId, BindingArtefact, OfframpArtefact, OnrampArtefact, PipelineArtefact,
+    Artefact, ArtefactId, BindingArtefact, OfframpArtefact, OnrampArtefact, PipelineArtefact, ConnectorArtefact
 };
 use crate::url::TremorUrl;
 use async_channel::bounded;
@@ -187,6 +187,7 @@ pub struct Registries {
     pipeline: async_channel::Sender<Msg<PipelineArtefact>>,
     onramp: async_channel::Sender<Msg<OnrampArtefact>>,
     offramp: async_channel::Sender<Msg<OfframpArtefact>>,
+    connector: async_channel::Sender<Msg<ConnectorArtefact>>,
     binding: async_channel::Sender<Msg<BindingArtefact>>,
 }
 
@@ -213,6 +214,7 @@ impl Registries {
             pipeline: Registry::new().start(),
             onramp: Registry::new().start(),
             offramp: Registry::new().start(),
+            connector: Registry::new().start()
         }
     }
     /// serialize the mappings of this registry

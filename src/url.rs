@@ -25,6 +25,8 @@ pub enum ResourceType {
     Onramp,
     /// This is an offramp
     Offramp,
+    /// connector
+    Connector,
     /// This is a binding
     Binding,
 }
@@ -78,6 +80,7 @@ fn decode_type(t: &str) -> Result<ResourceType> {
         "onramp" => Ok(ResourceType::Onramp),
         "offramp" => Ok(ResourceType::Offramp),
         "binding" => Ok(ResourceType::Binding),
+        "connector" => Ok(ResourceType::Connector),
         other => Err(format!("Bad Resource type: {}", other).into()),
     }
 }
@@ -88,6 +91,7 @@ impl fmt::Display for ResourceType {
             Self::Pipeline => write!(f, "pipeline"),
             Self::Onramp => write!(f, "onramp"),
             Self::Offramp => write!(f, "offramp"),
+            Self::Connector => write!(f, "connector"),
             Self::Binding => write!(f, "binding"),
         }
     }
@@ -134,6 +138,10 @@ impl TremorUrl {
     ///  * if the passed ID isn't a valid offramp id
     pub fn from_offramp_id(id: &str) -> Result<Self> {
         Self::parse(&format!("/offramp/{}", id))
+    }
+
+    pub fn from_connector_id(id: &str) -> Result<Self> {
+        Self::parse(&format!("/connector/{}", id))
     }
 
     /// Parses a string into a Trmeor URL
@@ -387,6 +395,14 @@ mod test {
     fn from_offramp_id() -> Result<()> {
         let url = TremorUrl::from_offramp_id("test")?;
         assert_eq!(Some(ResourceType::Offramp), url.resource_type());
+        assert_eq!(Some("test"), url.artefact());
+        Ok(())
+    }
+
+    #[test]
+    fn from_connector_id() -> Result<()> {
+        let url = TremorUrl::from_connector_id("test")?;
+        assert_eq!(Some(ResourceType::Connector), url.resource_type());
         assert_eq!(Some("test"), url.artefact());
         Ok(())
     }

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// default `TREMOR_PATH`
 ///
-/// * `/usr/share/tremor/tremor-script` - in packages this directory contains the stdlib
+/// * `/usr/share/tremor/lib` - in packages this directory contains the stdlib
 /// * `/usr/local/share/tremor`         - place for custom user libraries and modules, takes precedence over stdlib
 const DEFAULT: &str = "/usr/local/share/tremor:/usr/share/tremor/lib";
 /// Structure representing module library paths

@@ -15,84 +15,54 @@
 // common id handling
 
 /// we namespace onramp, offramp and operator ids differently in order to avoid clashes
-const ONRAMP_ID_BASE: u64 = 0b0;
-const OPERATOR_ID_BASE: u64 = 0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
-const OFFRAMP_ID_BASE: u64 = 0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
+const ONRAMP_ID_BASE: u64 =    0b0;
+const OPERATOR_ID_BASE: u64 =  0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
+const OFFRAMP_ID_BASE: u64 =   0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
+const CONNECTOR_ID_BASE: u64 = 0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
 
 #[derive(Debug)]
+/// id generator
+pub struct IdGen<const BASE: u64>(u64);
+
+impl<const BASE: u64> IdGen<BASE> {
+    #[must_use]
+    /// constructor
+    pub fn new() -> Self {
+        Self(BASE)
+    }
+    /// return the next id for this generator
+    pub fn next_id(&mut self) -> u64 {
+        self.0 = self.0.checked_add(1).unwrap_or(BASE);
+        self.0
+    }
+}
+
+impl<const BASE: u64> Default for IdGen<BASE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// onramp id generator - generates consecutive u64 values
-pub struct OnrampIdGen(u64);
-
-impl OnrampIdGen {
-    #[must_use]
-    /// constructor
-    pub fn new() -> Self {
-        Self(ONRAMP_ID_BASE)
-    }
-    /// return the next id for this generator
-    pub fn next_id(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(1);
-        self.0
-    }
-}
-
-impl Default for OnrampIdGen {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug)]
+pub type OnrampIdGen = IdGen<ONRAMP_ID_BASE>;
 /// offramp id generator - generates consecutive u64 values
-pub struct OfframpIdGen(u64);
-impl OfframpIdGen {
-    #[must_use]
-    /// constructor
-    pub fn new() -> Self {
-        Self(OFFRAMP_ID_BASE)
-    }
-    /// return the next id for this generator
-    pub fn next_id(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(1);
-        self.0
-    }
-}
+pub type OfframpIdGen = IdGen<OFFRAMP_ID_BASE>;
+/// operator id generator - generates consecutive u64 values
+/// this one will be shared by all pipelines - so we ensure unique operator ids
+pub type OperatorIdGen = IdGen<OPERATOR_ID_BASE>;
+/// connector id generator - generates consecutive u64 values
+pub type ConnectorIdGen = IdGen<CONNECTOR_ID_BASE>;
 
-impl Default for OfframpIdGen {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
-#[derive(Debug)]
-/// offramp id generator - generates consecutive u64 values
-pub struct OperatorIdGen(u64);
-impl OperatorIdGen {
-    #[must_use]
-    /// constructor
-    pub fn new() -> Self {
-        Self(OPERATOR_ID_BASE)
-    }
-    /// return the next id for this generator
-    pub fn next_id(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(1);
-        self.0
-    }
-}
-
-impl Default for OperatorIdGen {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const TEST_BASE: u64 = 42;
     #[test]
-    fn onramp_id_gen() {
-        let mut idgen = OnrampIdGen::default();
+    fn id_gen() {
+        let mut idgen = IdGen::<TEST_BASE>::default();
         let ids: Vec<u64> = std::iter::repeat_with(|| idgen.next_id())
             .take(100)
             .collect();
@@ -100,46 +70,8 @@ mod tests {
         for window in ids.windows(2) {
             match window {
                 &[l, h] => {
-                    assert!(l > ONRAMP_ID_BASE);
-                    assert!(h > ONRAMP_ID_BASE);
-                    assert!(l < h); // strictly monotonically increasing
-                }
-                _ => assert!(false, "invalid window"),
-            }
-        }
-    }
-
-    #[test]
-    fn offramp_id_gen() {
-        let mut idgen = OfframpIdGen::default();
-        let ids: Vec<u64> = std::iter::repeat_with(|| idgen.next_id())
-            .take(100)
-            .collect();
-
-        for window in ids.windows(2) {
-            match window {
-                &[l, h] => {
-                    assert!(l > OFFRAMP_ID_BASE);
-                    assert!(h > OFFRAMP_ID_BASE);
-                    assert!(l < h); // strictly monotonically increasing
-                }
-                _ => assert!(false, "invalid window"),
-            }
-        }
-    }
-
-    #[test]
-    fn operator_id_gen() {
-        let mut idgen = OperatorIdGen::default();
-        let ids: Vec<u64> = std::iter::repeat_with(|| idgen.next_id())
-            .take(100)
-            .collect();
-
-        for window in ids.windows(2) {
-            match window {
-                &[l, h] => {
-                    assert!(l > OPERATOR_ID_BASE);
-                    assert!(h > OPERATOR_ID_BASE);
+                    assert!(l > TEST_BASE);
+                    assert!(h > TEST_BASE);
                     assert!(l < h); // strictly monotonically increasing
                 }
                 _ => assert!(false, "invalid window"),

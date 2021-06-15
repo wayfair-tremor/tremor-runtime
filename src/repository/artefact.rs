@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::errors::{Error, Result};
+use crate::errors::{Error, ErrorKind, Result};
 use crate::metrics::RampReporter;
-use crate::offramp;
 use crate::onramp;
 use crate::pipeline;
 use crate::registry::ServantId;
 use crate::system::{self, World};
 use crate::url::{ResourceType, TremorUrl};
 use crate::{codec, pipeline::ConnectTarget};
+use crate::{connectors, offramp, url};
 use beef::Cow;
 use hashbrown::HashMap;
 use std::collections::HashSet;
 use tremor_pipeline::query;
 pub(crate) type Id = TremorUrl;
+pub(crate) use crate::Connector as ConnectorArtefact;
 pub(crate) use crate::OffRamp as OfframpArtefact;
 pub(crate) use crate::OnRamp as OnrampArtefact;
 use async_channel::bounded;
@@ -50,6 +51,7 @@ pub trait Artefact: Clone {
     type LinkResult: Clone;
     type LinkLHS: Clone;
     type LinkRHS: Clone;
+
     /// Move from Repository to Registry
     async fn spawn(&self, system: &World, servant_id: ServantId) -> Result<Self::SpawnResult>;
     /// Move from Registry(instantiated) to Registry(Active) or from one form of active to another
@@ -68,8 +70,35 @@ pub trait Artefact: Clone {
         id: &TremorUrl,
         mappings: HashMap<Self::LinkLHS, Self::LinkRHS>,
     ) -> Result<bool>;
-    fn artefact_id(u: &TremorUrl) -> Result<Id>;
-    fn servant_id(u: &TremorUrl) -> Result<ServantId>;
+
+    fn resource_type() -> url::ResourceType;
+
+    fn artefact_id(id: &TremorUrl) -> Result<Id> {
+        let mut id = id.clone();
+        id.trim_to_artefact();
+        let rt = Self::resource_type();
+        match (id.resource_type(), id.artefact()) {
+            (Some(id_rt), Some(_id)) if id_rt == rt => Ok(id),
+            _ => Err(ErrorKind::InvalidTremorUrl(format!(
+                "URL does not contain a {} artifact id: {}",
+                rt, id
+            ))
+            .into()),
+        }
+    }
+    fn servant_id(id: &TremorUrl) -> Result<ServantId> {
+        let mut id = id.clone();
+        id.trim_to_instance();
+        let rt = Self::resource_type();
+        match (id.resource_type(), id.instance()) {
+            (Some(id_rt), Some(_id)) if id_rt == rt => Ok(id),
+            _ => Err(ErrorKind::InvalidTremorUrl(format!(
+                "URL does not contain a {} servant id: {}",
+                rt, id
+            ))
+            .into()),
+        }
+    }
 }
 
 #[async_trait]
@@ -79,7 +108,10 @@ impl Artefact for Pipeline {
     type LinkLHS = String;
     type LinkRHS = TremorUrl;
 
-    //    type Configuration = tremor_pipeline::Pipeline;
+    fn resource_type() -> url::ResourceType {
+        url::ResourceType::Pipeline
+    }
+
     async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
         world.start_pipeline(self.clone(), servant_id).await
     }
@@ -165,23 +197,6 @@ impl Artefact for Pipeline {
             Err(format!("Pipeline {:?} not found", id).into())
         }
     }
-
-    fn artefact_id(id: &TremorUrl) -> Result<Id> {
-        let mut id = id.clone();
-        id.trim_to_artefact();
-        match (id.resource_type(), id.artefact()) {
-            (Some(ResourceType::Pipeline), Some(_id)) => Ok(id),
-            _ => Err("URL does not contain a pipeline artifact id".into()),
-        }
-    }
-    fn servant_id(id: &TremorUrl) -> Result<ServantId> {
-        let mut id = id.clone();
-        id.trim_to_instance();
-        match (id.resource_type(), id.instance()) {
-            (Some(ResourceType::Pipeline), Some(_id)) => Ok(id),
-            _ => Err(format!("URL does not contain a pipeline servant id: {}", id).into()),
-        }
-    }
 }
 
 #[async_trait]
@@ -190,6 +205,11 @@ impl Artefact for OfframpArtefact {
     type LinkResult = bool;
     type LinkLHS = TremorUrl;
     type LinkRHS = TremorUrl;
+
+    fn resource_type() -> url::ResourceType {
+        url::ResourceType::Offramp
+    }
+
     async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
         //TODO: define offramp by config!
         let offramp = offramp::lookup(&self.binding_type, &self.config)?;
@@ -299,23 +319,6 @@ impl Artefact for OfframpArtefact {
             Err(format!("Offramp {} not found for unlinking,", id).into())
         }
     }
-
-    fn artefact_id(id: &TremorUrl) -> Result<Id> {
-        let mut id = id.clone();
-        id.trim_to_artefact();
-        match (id.resource_type(), id.artefact()) {
-            (Some(ResourceType::Offramp), Some(_)) => Ok(id),
-            _ => Err(format!("URL does not contain an offramp artifact id: {}", id).into()),
-        }
-    }
-    fn servant_id(id: &TremorUrl) -> Result<ServantId> {
-        let mut id = id.clone();
-        id.trim_to_instance();
-        match (id.resource_type(), id.instance()) {
-            (Some(ResourceType::Offramp), Some(_)) => Ok(id),
-            _ => Err(format!("URL does not contain a offramp servant id: {}", id).into()),
-        }
-    }
 }
 #[async_trait]
 impl Artefact for OnrampArtefact {
@@ -323,6 +326,11 @@ impl Artefact for OnrampArtefact {
     type LinkResult = bool;
     type LinkLHS = String;
     type LinkRHS = TremorUrl;
+
+    fn resource_type() -> url::ResourceType {
+        url::ResourceType::Onramp
+    }
+
     async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
         let stream = onramp::lookup(&self.binding_type, &servant_id, &self.config)?;
         let codec = self.codec.as_ref().map_or_else(
@@ -444,22 +452,48 @@ impl Artefact for OnrampArtefact {
             Err(format!("Unlinking failed Onramp {} not found ", id).into())
         }
     }
+}
 
-    fn artefact_id(id: &TremorUrl) -> Result<Id> {
-        let mut id = id.clone();
-        id.trim_to_artefact();
-        match (id.resource_type(), id.artefact()) {
-            (Some(ResourceType::Onramp), Some(_)) => Ok(id),
-            _ => Err(format!("URL {} does not contain a onramp artifact id", id).into()),
-        }
+#[async_trait]
+impl Artefact for ConnectorArtefact {
+    type SpawnResult = connectors::Addr;
+
+    type LinkResult = bool;
+
+    type LinkLHS = TremorUrl;
+
+    type LinkRHS = TremorUrl;
+
+    fn resource_type() -> url::ResourceType {
+        url::ResourceType::Connector
     }
-    fn servant_id(id: &TremorUrl) -> Result<ServantId> {
-        let mut id = id.clone();
-        id.trim_to_instance();
-        match (id.resource_type(), id.instance()) {
-            (Some(ResourceType::Onramp), Some(_id)) => Ok(id),
-            _ => Err(format!("URL does not contain a onramp servant id: {}", id).into()),
-        }
+
+    async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
+        let create = connectors::Create::new(servant_id.clone(), self.clone());
+        let (tx, rx) = bounded(1);
+        world
+            .system
+            .send(system::ManagerMsg::CreateConnector(tx, create))
+            .await?;
+        rx.recv().await?
+    }
+
+    async fn link(
+        &self,
+        _system: &World,
+        _id: &TremorUrl,
+        _mappings: HashMap<Self::LinkLHS, Self::LinkRHS>,
+    ) -> Result<Self::LinkResult> {
+        todo!()
+    }
+
+    async fn unlink(
+        &self,
+        _system: &World,
+        _id: &TremorUrl,
+        _mappings: HashMap<Self::LinkLHS, Self::LinkRHS>,
+    ) -> Result<bool> {
+        todo!()
     }
 }
 
@@ -473,6 +507,11 @@ impl Artefact for Binding {
     type LinkResult = Self;
     type LinkLHS = String;
     type LinkRHS = String;
+
+    fn resource_type() -> url::ResourceType {
+        url::ResourceType::Binding
+    }
+
     async fn spawn(&self, _: &World, _: ServantId) -> Result<Self::SpawnResult> {
         //TODO: Validate
         Ok(self.clone())
@@ -659,22 +698,5 @@ impl Artefact for Binding {
 
         info!("Binding {} unlinked.", self.binding.id);
         Ok(true)
-    }
-
-    fn artefact_id(id: &TremorUrl) -> Result<Id> {
-        let mut id = id.clone();
-        id.trim_to_artefact();
-        match (id.resource_type(), id.artefact()) {
-            (Some(ResourceType::Binding), Some(_)) => Ok(id),
-            _ => Err(format!("URL {} does not contain a binding artifact id", id).into()),
-        }
-    }
-    fn servant_id(id: &TremorUrl) -> Result<ServantId> {
-        let mut id = id.clone();
-        id.trim_to_instance();
-        match (id.resource_type(), id.instance()) {
-            (Some(ResourceType::Binding), Some(_id)) => Ok(id),
-            _ => Err(format!("URL does not contain a binding servant id: {}", id).into()),
-        }
     }
 }

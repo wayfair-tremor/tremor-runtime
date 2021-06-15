@@ -125,7 +125,6 @@ impl<A: Artefact> ActivatorLifecycleFsm<A> {
 mod test {
     use super::*;
     use crate::config;
-    use crate::incarnate;
     use crate::repository::BindingArtefact;
     use crate::system::World;
     use crate::url::TremorUrl;
@@ -142,9 +141,8 @@ mod test {
     async fn onramp_activation_lifecycle() {
         let (world, _) = World::start(10, None).await.expect("failed to start world");
 
-        let config = slurp("tests/configs/ut.passthrough.yaml");
-        let mut runtime = incarnate(config).expect("failed to incarnate runtime");
-        let artefact = runtime.onramps.pop().expect("artefact not found");
+        let mut config = slurp("tests/configs/ut.passthrough.yaml");
+        let artefact = config.onramp.pop().expect("artefact not found");
         let id = TremorUrl::parse("/onramp/blaster/00").expect("artefact not found");
         assert!(world
             .repo
@@ -206,9 +204,8 @@ mod test {
     async fn offramp_activation_lifecycle() {
         let (world, _) = World::start(10, None).await.expect("failed to start world");
 
-        let config = slurp("tests/configs/ut.passthrough.yaml");
-        let mut runtime = incarnate(config).expect("failed to incarnate runtime");
-        let artefact = runtime.offramps.pop().expect("artefact not found");
+        let mut config = slurp("tests/configs/ut.passthrough.yaml");
+        let artefact = config.offramp.pop().expect("artefact not found");
         let id = TremorUrl::parse("/offramp/test/out/00").expect("artefact not found");
         assert!(world
             .repo
@@ -270,10 +267,9 @@ mod test {
     async fn binding_activation_lifecycle() {
         let (world, _) = World::start(10, None).await.expect("failed to start world");
 
-        let config = slurp("tests/configs/ut.passthrough.yaml");
-        let mut runtime = incarnate(config).expect("failed to incarnate runtime");
+        let mut config = slurp("tests/configs/ut.passthrough.yaml");
         let artefact = BindingArtefact {
-            binding: runtime.bindings.pop().expect("artefact not found"),
+            binding: config.binding.pop().expect("artefact not found"),
             mapping: None,
         };
         let id = TremorUrl::parse("/binding/test/snot").expect("artefact not found");

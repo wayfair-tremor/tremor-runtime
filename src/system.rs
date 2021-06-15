@@ -32,6 +32,7 @@ use tremor_common::time::nanotime;
 pub(crate) use crate::offramp;
 pub(crate) use crate::onramp;
 pub(crate) use crate::pipeline;
+pub(crate) use crate::connectors;
 
 lazy_static! {
     pub(crate) static ref METRICS_PIPELINE: TremorUrl = {
@@ -70,6 +71,10 @@ pub(crate) enum ManagerMsg {
         async_channel::Sender<Result<offramp::Addr>>,
         Box<offramp::Create>,
     ),
+    CreateConnector(
+        async_channel::Sender<Result<connectors::Addr>>,
+        connectors::Create,
+    ),
     Stop,
 }
 
@@ -77,9 +82,11 @@ pub(crate) type Sender = async_channel::Sender<ManagerMsg>;
 
 #[derive(Debug)]
 pub(crate) struct Manager {
+    pub connector: connectors::Sender,
     pub offramp: offramp::Sender,
     pub onramp: onramp::Sender,
     pub pipeline: pipeline::Sender,
+    pub connector_h: JoinHandle<Result<()>>,
     pub offramp_h: JoinHandle<Result<()>>,
     pub onramp_h: JoinHandle<Result<()>>,
     pub pipeline_h: JoinHandle<Result<()>>,
@@ -102,6 +109,9 @@ impl Manager {
                     }
                     ManagerMsg::CreateOfframp(r, c) => {
                         self.offramp.send(offramp::ManagerMsg::Create(r, c)).await?
+                    }
+                    ManagerMsg::CreateConnector(tx, create) => {
+                        self.connector.send(connectors::ManagerMsg::Create{tx, create}).await?
                     }
                     ManagerMsg::Stop => {
                         info!("Stopping offramps...");
@@ -587,6 +597,7 @@ impl World {
         let config = crate::config::Config {
             onramp,
             offramp,
+            connector: vec![],
             binding,
             mapping,
         };
@@ -650,14 +661,17 @@ impl World {
         qsize: usize,
         storage_directory: Option<String>,
     ) -> Result<(Self, JoinHandle<Result<()>>)> {
+        let (connector_h, connector) = connectors::Manager::new(qsize).start();
         let (onramp_h, onramp) = onramp::Manager::new(qsize).start();
         let (offramp_h, offramp) = offramp::Manager::new(qsize).start();
         let (pipeline_h, pipeline) = pipeline::Manager::new(qsize).start();
 
         let (system_h, system) = Manager {
+            connector,
             offramp,
             onramp,
             pipeline,
+            connector_h,
             offramp_h,
             onramp_h,
             pipeline_h,

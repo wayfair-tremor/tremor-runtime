@@ -427,7 +427,7 @@ impl Manager {
     }
 
     pub fn start(self) -> (JoinHandle<Result<()>>, Sender) {
-        let (tx, rx) = bounded(crate::QSIZE);
+        let (tx, rx) = bounded(self.qsize);
         let h = task::spawn(async move {
             info!("Offramp manager started");
             let mut offramp_id_gen = OfframpIdGen::new();
