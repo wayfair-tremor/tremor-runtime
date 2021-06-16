@@ -15,10 +15,10 @@
 // common id handling
 
 /// we namespace onramp, offramp and operator ids differently in order to avoid clashes
-const ONRAMP_ID_BASE: u64 =    0b0;
-const OPERATOR_ID_BASE: u64 =  0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
-const OFFRAMP_ID_BASE: u64 =   0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
-const CONNECTOR_ID_BASE: u64 = 0b1000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_u64;
+const ONRAMP_ID_BASE: u64 =    0x10_00_00_00_00_00_00_00_u64;
+const OPERATOR_ID_BASE: u64 =  0x20_00_00_00_00_00_00_00_u64;
+const OFFRAMP_ID_BASE: u64 =   0x30_00_00_00_00_00_00_00_u64;
+const CONNECTOR_ID_BASE: u64 = 0x40_00_00_00_00_00_00_00_u64
 
 #[derive(Debug)]
 /// id generator
