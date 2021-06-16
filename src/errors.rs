@@ -212,7 +212,6 @@ error_chain! {
                 display("Failed to bind non existand {}.", key)
         }
 
-        // TODO: Old errors, verify if needed
         BadOpConfig(e: String) {
             description("Operator config has a bad syntax")
                 display("Operator config has a bad syntax: {}", e)
