@@ -132,7 +132,7 @@ impl Connector for TcpServer {
             // TODO: provide utility for stream id generation
             let mut stream_id = 0_usize;
             while let Ok((stream, peer_addr)) = listener.accept().await {
-                let my_id: usize = stream_id;
+                let my_id: u64 = stream_id;
                 stream_id += 1;
 
                 let (mut read_half, mut write_half) = stream.split();
@@ -158,7 +158,7 @@ impl Connector for TcpServer {
                         let sc_data = SourceReply::Data {
                             origin_uri: origin_uri.clone(),
                             codec_override: None,
-                            stream: my_id,
+                            stream: my_id as usize,
                             meta: None,
                             // ALLOW: we know bytes_read is smaller than or equal buf_size
                             data: buffer[0..bytes_read].to_vec(),

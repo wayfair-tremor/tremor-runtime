@@ -84,6 +84,7 @@ impl Reconnect {
             }
         }
         self.attempt += 1;
+        // TODO: trait out next interval computation, to support different strategies
         self.interval_ms = (self.interval_ms as f64 * self.config.growth_rate) as u64;
 
         // spawn retry

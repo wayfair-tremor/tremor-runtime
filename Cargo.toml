@@ -35,10 +35,12 @@ async-compat = "0.2"
 async-compression = { version="0.3", features=["xz", "futures-bufread", "stream"] }
 async-std = { version="1.9.0", features=["unstable", "attributes", "tokio03", "tokio1"] }
 async-std-resolver = "0.20"
+async-tls = "0.11"
 async-trait = "0.1"
 async-tungstenite = { version="0.14.0", features=["async-std-runtime"] }
 base64 = "0.13"
 beef = { version="0.5", features=["impl_serde"] }
+bimap = "0.6"
 byteorder = "1"
 bytes = "1.0"
 chrono = "0.4"
@@ -64,6 +66,7 @@ rand = "0.8"
 regex = "1.4"
 rental = "0.5"
 rmp-serde = "0.15"
+rustls = "0.19"
 serde = "1"
 serde_derive = "1"
 serde_yaml = "0.8"
@@ -72,6 +75,7 @@ simd-json-derive = "0.2"
 snap = "1"
 surf = "=2.2.0"
 syslog_loose = "0.14"
+
 tremor-common = { path="tremor-common" }
 tremor-influx = { path="tremor-influx" }
 tremor-pipeline = { path="tremor-pipeline" }
@@ -80,9 +84,6 @@ tremor-value = { path="tremor-value" }
 url = "2.2"
 value-trait = "0.2"
 zstd = "0.9"
-
-async-tls = "0.11"
-rustls = "0.19"
 
 mapr = "0.8"
 tempfile = { version="3.2" }

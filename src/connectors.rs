@@ -178,6 +178,7 @@ impl Manager {
         let mut reconnect: Reconnect = Reconnect::from(create.config.reconnect);
         let mut connectivity = Connectivity::Disconnected;
         let mut connector_state = ConnectorState::Stopped;
+        dbg!(connector_state);
 
         ///// create source instance
         // channel for sending SourceReply to the source part of this connector
@@ -234,6 +235,7 @@ impl Manager {
         };
         let send_addr = addr.clone();
         connector_state = ConnectorState::Initialized;
+        dbg!(connector_state);
 
         task::spawn::<_, Result<()>>(async move {
             // typical 1 pipeline connected to IN, OUT, ERR
@@ -402,6 +404,7 @@ impl Manager {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum ConnectorState {
     Initialized,
     Running,

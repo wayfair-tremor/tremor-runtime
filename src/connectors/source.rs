@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::errors::{Error, Result};
+use crate::errors::Result;
 use crate::pipeline;
 use crate::url::TremorUrl;
 use async_channel::{bounded, Receiver, Sender};
@@ -70,16 +70,17 @@ impl ChannelSource {
 #[async_trait::async_trait()]
 impl Source for ChannelSource {
     async fn pull_data(&mut self, _id: u64) -> Result<crate::source::SourceReply> {
-        if self.rx.is_empty() {
-            // TODO: configure pull interval in connector config?
-            Ok(crate::source::SourceReply::Empty(10))
-        } else {
-            self.rx.try_recv().map_err(Error::from)
+        match self.rx.try_recv() {
+            Ok(reply) => Ok(reply),
+            Err(async_channel::TryRecvError::Empty) => {
+                // TODO: configure pull interval in connector config?
+                Ok(crate::source::SourceReply::Empty(10))
+            }
+            Err(e) => Err(e.into()),
         }
     }
 }
 
-// TODO
 // TODO make fields private and add some nice methods
 pub(crate) struct SourceContext {
     /// connector uid

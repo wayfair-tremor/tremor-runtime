@@ -682,6 +682,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bimap"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50ae17cabbc8a38a1e3e4c1a6a664e9a09672dc14d0896fa8d865d3a5a446b07"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6576,6 +6582,7 @@ dependencies = [
  "async-tungstenite 0.14.0",
  "base64 0.13.0",
  "beef",
+ "bimap",
  "byteorder",
  "bytes 1.0.1",
  "chrono",
