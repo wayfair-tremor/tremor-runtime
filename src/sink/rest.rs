@@ -16,6 +16,8 @@
 
 use crate::codec::Codec;
 use crate::errors::ErrorKind;
+#[allow(unused_imports)]
+use crate::connectors::gcp::{auth};
 use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
 use halfbrown::HashMap;
@@ -449,6 +451,9 @@ impl Sink for Rest {
             .collect::<HashMap<String, Box<dyn Codec>>>();
         let default_method = self.config.method.0;
         let endpoint = self.config.endpoint.clone();
+        #[cfg(uses_gcp_auth)]
+        let config_headers = auth::make_headers(self.config.headers.clone());
+        #[cfg(not(uses_gcp_auth))]
         let config_headers = self.config.headers.clone();
         let cloned_sink_url = sink_url.clone();
         self.sink_url = sink_url.clone();

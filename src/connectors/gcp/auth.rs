@@ -26,7 +26,13 @@ pub(crate) async fn authenticate_bearer() -> Result<String> {
 }
 
 pub(crate) async fn json_api_client(extra_headers: &HeaderMap) -> Result<Client> {
-    let bearer = authenticate_bearer().await?;
+    Ok(reqwest::Client::builder()
+        .default_headers(make_headers(extra_headers).await?)
+        .build()?)
+}
+
+pub(crate) async fn make_headers(extra_headers: &HeaderMap) -> Result<HeaderMap> {
+  let bearer = authenticate_bearer().await?;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         "authorization",
@@ -39,8 +45,5 @@ pub(crate) async fn json_api_client(extra_headers: &HeaderMap) -> Result<Client>
     for header in extra_headers {
         headers.append(header.0, header.1.clone());
     }
-
-    Ok(reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?)
+    Ok(headers)
 }
