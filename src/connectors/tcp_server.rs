@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 // Copyright 2021, The Tremor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,13 +16,15 @@
 use crate::connectors::prelude::*;
 use crate::connectors::sink::{ChannelSink, ChannelSinkMsg};
 use crate::connectors::source::ChannelSource;
-use crate::source::SourceReply;
+pub use crate::errors::{Error, ErrorKind, Result};
 use async_channel::{bounded, Sender, TrySendError};
 use async_std::net::TcpListener;
 use async_std::task::{self, JoinHandle};
 use futures::io::{AsyncReadExt, AsyncWriteExt};
+use simd_json::ValueAccess;
 use tremor_common::stry;
 use tremor_pipeline::EventOriginUri;
+use tremor_value::{literal, Value};
 
 const URL_SCHEME: &str = "tremor-tcp";
 
@@ -40,29 +44,49 @@ fn default_buf_size() -> usize {
 
 impl ConfigImpl for Config {}
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ConnectionMeta {
+    host: String,
+    port: u16,
+}
+
+impl From<SocketAddr> for ConnectionMeta {
+    fn from(sa: SocketAddr) -> Self {
+        Self {
+            host: sa.ip().to_string(),
+            port: sa.port(),
+        }
+    }
+}
+
 pub struct TcpServer {
     url: TremorUrl,
     config: Config,
     accept_task: Option<JoinHandle<Result<()>>>,
-    sink_channel: Sender<ChannelSinkMsg>,
+    sink_channel: Sender<ChannelSinkMsg<ConnectionMeta>>,
     source_channel: Sender<SourceReply>,
 }
 
-impl ConnectorBuilder for TcpServer {
-    fn from_config(url: &TremorUrl, raw_config: &Option<OpConfig>) -> Result<Box<dyn Connector>> {
+pub(crate) struct Builder {}
+impl ConnectorBuilder for Builder {
+    fn from_config(
+        &self,
+        id: &TremorUrl,
+        raw_config: &Option<OpConfig>,
+    ) -> crate::errors::Result<Box<dyn Connector>> {
         if let Some(raw_config) = raw_config {
             let config = Config::new(raw_config)?;
             let (dummy_tx, _dummy_rx) = bounded(1);
             let (dummy_tx2, _dummy_rx) = bounded(1);
             Ok(Box::new(TcpServer {
-                url: url.clone(),
+                url: id.clone(),
                 config,
                 accept_task: None, // not yet started
                 sink_channel: dummy_tx2,
                 source_channel: dummy_tx,
             }))
         } else {
-            Err(ErrorKind::MissingConfiguration(String::from("TcpServer")).into())
+            Err(crate::errors::ErrorKind::MissingConfiguration(String::from("TcpServer")).into())
         }
     }
 }
@@ -88,6 +112,17 @@ async fn send<T>(url: &TremorUrl, msg: T, tx: &Sender<T>) -> Result<()> {
     res
 }
 
+fn resolve_connection_meta<'value>(meta: &Value<'value>) -> Option<ConnectionMeta> {
+    meta.get_i32("port")
+        .zip(meta.get_str("host"))
+        .map(|(port, host)| -> ConnectionMeta {
+            ConnectionMeta {
+                host: host.to_string(),
+                port: port as u16,
+            }
+        })
+}
+
 #[async_trait::async_trait()]
 impl Connector for TcpServer {
     async fn on_start(&mut self, _ctx: &ConnectorContext) -> Result<ConnectorState> {
@@ -107,7 +142,7 @@ impl Connector for TcpServer {
         &mut self,
         _sink_context: &mut SinkContext,
     ) -> Result<Option<Box<dyn Sink>>> {
-        let sink = ChannelSink::new(crate::QSIZE);
+        let sink = ChannelSink::new(crate::QSIZE, resolve_connection_meta);
         self.sink_channel = sink.sender();
         Ok(Some(Box::new(sink)))
     }
@@ -130,10 +165,11 @@ impl Connector for TcpServer {
         // accept task
         self.accept_task = Some(task::spawn(async move {
             // TODO: provide utility for stream id generation
-            let mut stream_id = 0_usize;
+            let mut stream_id = 0_u64;
             while let Ok((stream, peer_addr)) = listener.accept().await {
                 let my_id: u64 = stream_id;
                 stream_id += 1;
+                let connection_meta = peer_addr.into();
 
                 let (mut read_half, mut write_half) = stream.split();
                 let sc_stream = sc.clone();
@@ -155,11 +191,17 @@ impl Connector for TcpServer {
                 task::spawn(async move {
                     let mut buffer = Vec::with_capacity(buf_size);
                     while let Ok(bytes_read) = read_half.read(&mut buffer).await {
+                        // TODO: meta needs to be wrapped in <RESOURCE_TYPE>.<ARTEFACT> by the source manager
+                        // this is only the connector specific part, without the path mentioned above
+                        let meta = literal!({
+                            "host": peer_addr.ip().to_string(),
+                            "port": peer_addr.port()
+                        });
                         let sc_data = SourceReply::Data {
                             origin_uri: origin_uri.clone(),
                             codec_override: None,
-                            stream: my_id as usize,
-                            meta: None,
+                            stream: my_id,
+                            meta: Some(meta),
                             // ALLOW: we know bytes_read is smaller than or equal buf_size
                             data: buffer[0..bytes_read].to_vec(),
                         };
@@ -171,6 +213,7 @@ impl Connector for TcpServer {
                 let (stream_tx, stream_rx) = bounded::<SinkData>(crate::QSIZE);
 
                 // spawn sink stream task
+                let stream_sink_tx = sink_tx.clone();
                 task::spawn(async move {
                     while let Ok(data) = stream_rx.recv().await {
                         for chunk in data.data {
@@ -178,10 +221,17 @@ impl Connector for TcpServer {
                             write_half.write_all(slice).await?;
                         }
                     }
+                    stream_sink_tx
+                        .send(ChannelSinkMsg::RemoveStream(my_id))
+                        .await?;
                     Result::Ok(())
                 });
                 sink_tx
-                    .send(ChannelSinkMsg::NewStream(my_id, stream_tx))
+                    .send(ChannelSinkMsg::NewStream {
+                        stream_id: my_id,
+                        meta: Some(connection_meta),
+                        sender: stream_tx,
+                    })
                     .await?;
             }
             // TODO: notify connector task about disconnect

@@ -12,9 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use crate::connectors::sink::{Sink, SinkContext, SinkData};
-pub use crate::connectors::source::{Source, SourceContext, SourceReply};
-pub use crate::connectors::{Connector, ConnectorBuilder, ConnectorContext, ConnectorState};
-pub use crate::url::TremorUrl;
-pub use crate::OpConfig;
-pub use tremor_pipeline::ConfigImpl;
+pub(crate) mod mmap;
+pub(crate) mod postgres;

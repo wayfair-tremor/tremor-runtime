@@ -1,4 +1,4 @@
-// Copyright 2020-2021, The Tremor Team
+// Copyright 2021, The Tremor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 use crate::errors::Result;
 use mapr::MmapOptions;
 use std::cmp;
@@ -21,8 +22,6 @@ use std::ops::DerefMut;
 use std::path::Path;
 use tremor_pipeline::ConfigImpl;
 use tremor_script::prelude::*;
-
-pub mod postgres;
 
 pub trait Kv {
     fn get(&mut self) -> Result<simd_json::OwnedValue>;

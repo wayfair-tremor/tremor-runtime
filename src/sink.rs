@@ -15,6 +15,7 @@
 #![cfg(not(tarpaulin_include))]
 use crate::pipeline;
 use crate::sink::prelude::*;
+use crate::system::World;
 use crate::url::TremorUrl;
 use async_channel::Sender;
 use halfbrown::HashMap;
@@ -35,6 +36,7 @@ pub(crate) mod nats;
 pub(crate) mod newrelic;
 pub(crate) mod otel;
 pub(crate) mod postgres;
+/// lots of useful stuff in there
 pub(crate) mod prelude;
 pub(crate) mod rest;
 pub(crate) mod stderr;
@@ -43,11 +45,12 @@ pub(crate) mod tcp;
 pub(crate) mod udp;
 pub(crate) mod ws;
 
+/// reply from a sink
 #[derive(Debug)]
 pub enum Reply {
+    /// contraflow event
     Insight(Event),
-    // out port and the event
-    // TODO better name for this?
+    /// response from the sink
     Response(Cow<'static, str>, Event),
 }
 
@@ -61,6 +64,7 @@ pub enum Reply {
 /// A response is an event generated from the sink delivery.
 pub(crate) type ResultVec = Result<Option<Vec<Reply>>>;
 
+/// a sink for events -> sent to the outside world
 #[async_trait::async_trait]
 pub(crate) trait Sink {
     /// Handles an incoming event.
@@ -82,6 +86,7 @@ pub(crate) trait Sink {
         codec_map: &HashMap<String, Box<dyn Codec>>,
         event: Event,
     ) -> ResultVec;
+    /// react on a signal
     async fn on_signal(&mut self, signal: Event) -> ResultVec;
 
     /// This function should be implemented to be idempotent
@@ -116,10 +121,11 @@ pub(crate) trait Sink {
     /// Otherwise dont send any.
     /// For `ack` insights include a `time` field in the insight metadata with duration it took for handling the event in milliseconds, if it makes sense.
     fn auto_ack(&self) -> bool;
-
+    /// returns the default codec for this sink
     fn default_codec(&self) -> &str;
 }
 
+/// manages a single sink and drives its task
 pub(crate) struct SinkManager<T>
 where
     T: Sink,
@@ -144,7 +150,8 @@ where
         }
     }
 
-    fn new_box(sink: T) -> Box<Self> {
+    /// create a new boxed instance
+    pub fn new_box(sink: T) -> Box<Self> {
         Box::new(Self::new(sink))
     }
 
@@ -334,6 +341,75 @@ where
             error!("Error: {}", e)
         };
     }
+    Ok(())
+}
+
+/// register buitlin sink types
+#[cfg(not(tarpaulin_include))]
+pub async fn register_builtin_sinks(world: &World) -> Result<()> {
+    world
+        .register_builtin_offramp_type("amqp", Box::new(amqp::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("cb", Box::new(cb::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("debug", Box::new(debug::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("dns", Box::new(dns::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("elastic", Box::new(elastic::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("exit", Box::new(exit::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("file", Box::new(file::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("gcs", Box::new(gcs::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("gpub", Box::new(gpub::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("kafka", Box::new(kafka::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("kv", Box::new(kv::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("nats", Box::new(nats::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("newrelic", Box::new(newrelic::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("otel", Box::new(otel::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("postgres", Box::new(postgres::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("rest", Box::new(rest::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("stderr", Box::new(stderr::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("stdout", Box::new(stdout::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("tcp", Box::new(tcp::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("udp", Box::new(udp::Builder {}))
+        .await?;
+    world
+        .register_builtin_offramp_type("ws", Box::new(ws::Builder {}))
+        .await?;
     Ok(())
 }
 

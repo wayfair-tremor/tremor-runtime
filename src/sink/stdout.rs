@@ -45,16 +45,17 @@ struct Config {
 
 impl ConfigImpl for Config {}
 
-impl offramp::Impl for StdOut {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(StdOut {
                 postprocessors: vec![],
                 stdout: io::stdout(),
                 config: Config::new(config)?,
             }))
         } else {
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(StdOut {
                 postprocessors: vec![],
                 stdout: io::stdout(),
                 config: Config::default(),

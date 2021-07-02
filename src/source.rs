@@ -17,6 +17,7 @@ use crate::metrics::RampReporter;
 use crate::onramp;
 use crate::pipeline;
 use crate::preprocessor::{make_preprocessors, preprocess, Preprocessors};
+use crate::system::World;
 use crate::url::ports::{ERR, METRICS, OUT};
 use crate::url::TremorUrl;
 use crate::{
@@ -49,6 +50,7 @@ pub(crate) mod metronome;
 pub(crate) mod nats;
 pub(crate) mod otel;
 pub(crate) mod postgres;
+/// prelude full of useful stuff
 pub(crate) mod prelude;
 pub(crate) mod rest;
 pub(crate) mod sse;
@@ -70,35 +72,48 @@ pub struct Processors<'processor> {
 
 #[derive(Debug)]
 pub(crate) enum SourceState {
+    /// source is connected
     Connected,
+    /// source is disconnected
     Disconnected,
 }
 
+/// reply of a source from pull_event
 #[derive(Debug)]
 pub(crate) enum SourceReply {
     /// A normal batch_data event with a `Vec<Vec<u8>>` for data
     BatchData {
+        /// uri containing info about the origin of the data
         origin_uri: EventOriginUri,
+        /// batched data and corresponing metadata
         batch_data: Vec<(Vec<u8>, Option<Value<'static>>)>,
         /// allow source to override codec when pulling event
         /// the given string must be configured in the `config-map` as part of the source config
         codec_override: Option<String>,
+        /// stream identifier
         stream: usize,
     },
     /// A normal data event with a `Vec<u8>` for data
     Data {
+        /// uri containing info about the origin of the data
         origin_uri: EventOriginUri,
+        /// data from the source
         data: Vec<u8>,
+        /// optional event metadata
         meta: Option<Value<'static>>,
         /// allow source to override codec when pulling event
         /// the given string must be configured in the `config-map` as part of the source config
         codec_override: Option<String>,
+        /// stream identifier
         stream: usize,
     },
     /// Allow for passthrough of already structured events
     Structured {
+        /// uri containing info about the origin of the data
         origin_uri: EventOriginUri,
+        /// already structured data (including metadata)
         data: EventPayload,
+        data: LineValue,
     },
     /// A stream is opened
     StartStream(usize),
@@ -110,6 +125,7 @@ pub(crate) enum SourceReply {
     Empty(u64),
 }
 
+/// Source trait - is polled for events and is able to receive reply events
 #[async_trait::async_trait]
 pub(crate) trait Source {
     /// Pulls an event from the source if one exists
@@ -162,6 +178,7 @@ pub(crate) trait Source {
     }
 }
 
+/// create an erro payload and metadata
 fn make_error(source_id: String, e: &Error, original_id: u64) -> tremor_script::EventPayload {
     error!("[Source::{}] Error decoding event data: {}", source_id, e);
     let mut meta = Object::with_capacity(1);
@@ -174,6 +191,8 @@ fn make_error(source_id: String, e: &Error, original_id: u64) -> tremor_script::
     (Value::from(data), Value::from(meta)).into()
 }
 
+/// Drives a source and handles control-plane messages
+/// and polls the source implementation for data
 pub(crate) struct SourceManager<T>
 where
     T: Source,
@@ -461,6 +480,7 @@ where
         error
     }
 
+    /// constructor
     async fn new(mut source: T, config: OnrampConfig<'_>) -> Result<(Self, Sender<onramp::Msg>)> {
         // We use a unbounded channel for counterflow, while an unbounded channel seems dangerous
         // there is soundness to this.
@@ -515,6 +535,7 @@ where
         ))
     }
 
+    /// start the `SourceManager`
     async fn start(source: T, config: OnrampConfig<'_>) -> Result<onramp::Addr> {
         let name = source.id().short_id("src");
         let (manager, tx) = SourceManager::new(source, config).await?;
@@ -542,6 +563,7 @@ where
         error
     }
 
+    /// run the source data plance
     #[allow(clippy::too_many_lines)]
     async fn run(mut self) -> Result<()> {
         loop {
@@ -646,6 +668,66 @@ where
             }
         }
     }
+}
+
+/// register builtin source types
+#[cfg(not(tarpaulin_include))]
+pub async fn register_builtin_sources(world: &World) -> Result<()> {
+    world
+        .register_builtin_onramp_type("amqp", Box::new(amqp::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("blaster", Box::new(blaster::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("cb", Box::new(cb::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("crononome", Box::new(crononome::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("discord", Box::new(discord::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("file", Box::new(file::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("gsub", Box::new(gsub::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("kafka", Box::new(kafka::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("metronome", Box::new(metronome::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("nats", Box::new(nats::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("otel", Box::new(otel::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("postgres", Box::new(postgres::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("rest", Box::new(rest::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("sse", Box::new(sse::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("stdin", Box::new(stdin::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("tcp", Box::new(tcp::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("udp", Box::new(udp::Builder {}))
+        .await?;
+    world
+        .register_builtin_onramp_type("ws", Box::new(ws::Builder {}))
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

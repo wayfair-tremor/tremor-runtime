@@ -87,8 +87,9 @@ pub struct NewRelic {
     config: Config,
 }
 
-impl offramp::Impl for NewRelic {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config = Config::new(config)?;
             Ok(SinkManager::new_box(NewRelic { config }))

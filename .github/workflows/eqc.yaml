@@ -25,7 +25,7 @@ jobs:
       - name: install EQC
         run: curl -O http://quviq-licencer.com/downloads/eqcR21.zip && unzip eqcR21.zip && cd Quviq* && sudo erl -noshell -eval 'eqc_install:install()' -eval 'init:stop()'
       - name: Activate EQC
-        run: erl -noshell -eval 'eqc:registration("${{secrets.EQC_LICENSE}}")' -eval "eqc:start()" -eval "init:stop()"
+        run: test -n "${{secrets.EQC_LICENSE}}" && erl -noshell -eval 'eqc:registration("${{secrets.EQC_LICENSE}}")' -eval "eqc:start()" -eval "init:stop()"
       - name: generate yaml
         run: ~/go/bin/yaml2json < static/openapi.yaml > static/openapi.json
       - name: Build

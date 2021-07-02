@@ -24,6 +24,7 @@ use crate::{connectors, offramp, url};
 use beef::Cow;
 use hashbrown::HashMap;
 use std::collections::HashSet;
+use std::time::Duration;
 use tremor_pipeline::query;
 pub(crate) type Id = TremorUrl;
 pub(crate) use crate::Connector as ConnectorArtefact;
@@ -211,8 +212,11 @@ impl Artefact for OfframpArtefact {
     }
 
     async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
-        //TODO: define offramp by config!
-        let offramp = offramp::lookup(&self.binding_type, &self.config)?;
+        // TODO: make duration configurable
+        let timeout = Duration::from_secs(2);
+        let offramp = world
+            .instantiate_offramp(self.binding_type.clone(), self.config.clone(), timeout)
+            .await?;
         // lookup codecs already here
         // this will bail out early if something is mistyped or so
         let codec = if let Some(codec) = &self.codec {
@@ -243,9 +247,11 @@ impl Artefact for OfframpArtefact {
 
         let (tx, rx) = bounded(1);
 
+        // start the offramp
+        // TODO: postpone to later
         world
             .system
-            .send(system::ManagerMsg::CreateOfframp(
+            .send(system::ManagerMsg::Offramp(offramp::ManagerMsg::Create(
                 tx,
                 Box::new(offramp::Create {
                     id: servant_id,
@@ -257,7 +263,7 @@ impl Artefact for OfframpArtefact {
                     metrics_reporter,
                     is_linked: self.is_linked,
                 }),
-            ))
+            )))
             .await?;
         rx.recv().await?
     }
@@ -332,7 +338,15 @@ impl Artefact for OnrampArtefact {
     }
 
     async fn spawn(&self, world: &World, servant_id: ServantId) -> Result<Self::SpawnResult> {
-        let stream = onramp::lookup(&self.binding_type, &servant_id, &self.config)?;
+        let timeout = Duration::from_secs(2); // TODO: make configurable
+        let stream = world
+            .instantiate_onramp(
+                self.binding_type.clone(),
+                servant_id.clone(),
+                self.config.clone(),
+                timeout,
+            )
+            .await?;
         let codec = self.codec.as_ref().map_or_else(
             || stream.default_codec().to_string(),
             std::clone::Clone::clone,
@@ -357,7 +371,7 @@ impl Artefact for OnrampArtefact {
 
         world
             .system
-            .send(system::ManagerMsg::CreateOnramp(
+            .send(system::ManagerMsg::Onramp(onramp::ManagerMsg::Create(
                 tx,
                 Box::new(onramp::Create {
                     id: servant_id,
@@ -370,7 +384,7 @@ impl Artefact for OnrampArtefact {
                     is_linked: self.is_linked,
                     err_required: self.err_required,
                 }),
-            ))
+            )))
             .await?;
         rx.recv().await?
     }
@@ -473,7 +487,9 @@ impl Artefact for ConnectorArtefact {
         let (tx, rx) = bounded(1);
         world
             .system
-            .send(system::ManagerMsg::CreateConnector(tx, create))
+            .send(system::ManagerMsg::Connector(
+                connectors::ManagerMsg::Create { tx, create },
+            ))
             .await?;
         rx.recv().await?
     }

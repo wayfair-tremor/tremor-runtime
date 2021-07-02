@@ -52,9 +52,10 @@ impl Int {
     }
 }
 
-impl onramp::Impl for Stdin {
-    fn from_config(id: &TremorUrl, _config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
-        Ok(Box::new(Self {
+pub(crate) struct Builder {}
+impl onramp::Builder for Builder {
+    fn from_config(&self, id: &TremorUrl, _config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
+        Ok(Box::new(Stdin {
             onramp_id: id.clone(),
         }))
     }

@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use crate::connectors::sink::{Sink, SinkContext, SinkData};
-pub use crate::connectors::source::{Source, SourceContext, SourceReply};
-pub use crate::connectors::{Connector, ConnectorBuilder, ConnectorContext, ConnectorState};
-pub use crate::url::TremorUrl;
-pub use crate::OpConfig;
-pub use tremor_pipeline::ConfigImpl;
+use tremor_script::Registry;
+
+use super::otel;
+
+/// load connector specific functions
+pub fn load(registry: &mut Registry) {
+    otel::load(registry);
+}

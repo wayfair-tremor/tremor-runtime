@@ -13,15 +13,13 @@
 // limitations under the License.
 
 use crate::codec::Codec;
-use crate::errors::Result;
+use crate::errors::{Error, ErrorKind, Result};
 use crate::metrics::RampReporter;
 use crate::permge::PriorityMerge;
 use crate::pipeline;
 use crate::registry::ServantId;
-use crate::sink::{
-    self, amqp, blackhole, cb, debug, dns, elastic, exit, file, gcs, gpub, handle_response, kafka,
-    kv, nats, newrelic, otel, postgres, rest, stderr, stdout, tcp, udp, ws,
-};
+
+use crate::sink::{self, handle_response};
 use crate::source::Processors;
 use crate::url::ports::{IN, METRICS};
 use crate::url::TremorUrl;
@@ -30,38 +28,55 @@ use async_channel::{self, bounded, unbounded};
 use async_std::stream::StreamExt; // for .next() on PriorityMerge
 use async_std::task::{self, JoinHandle};
 use beef::Cow;
-use halfbrown::HashMap;
+use halfbrown::{Entry, HashMap};
 use pipeline::ConnectTarget;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt;
 use tremor_common::ids::OfframpIdGen;
 use tremor_common::time::nanotime;
 
+/// messages an offramp can receive
 #[derive(Debug)]
 pub enum Msg {
+    /// event
     Event {
+        /// event
         event: Event,
+        /// port
         input: Cow<'static, str>,
     },
+    /// signal
     Signal(Event),
+    /// connect a pipeline
     Connect {
+        /// port
         port: Cow<'static, str>,
+        /// url of the pipeline
         id: TremorUrl,
+        /// pipeline addr
         addr: Box<pipeline::Addr>,
     },
+    /// disconnect a pipeline
     Disconnect {
+        /// port
         port: Cow<'static, str>,
+        /// url of the pipeline
         id: TremorUrl,
+        /// response sender (whether offramp is not connected anymore)
         tx: async_channel::Sender<bool>,
     },
+    /// terminate the offramp
     Terminate,
 }
 
 pub(crate) type Sender = async_channel::Sender<ManagerMsg>;
+/// offramp address
 pub type Addr = async_channel::Sender<Msg>;
 
+/// offramp
 #[async_trait::async_trait]
 pub trait Offramp: Send {
+    /// start the offramp
     #[allow(clippy::too_many_arguments)]
     async fn start(
         &mut self,
@@ -73,6 +88,7 @@ pub trait Offramp: Send {
         is_linked: bool,
         reply_channel: async_channel::Sender<sink::Reply>,
     ) -> Result<()>;
+    /// receives events
     async fn on_event(
         &mut self,
         codec: &mut dyn Codec,
@@ -80,59 +96,43 @@ pub trait Offramp: Send {
         input: &str,
         event: Event,
     ) -> Result<()>;
+    /// receives signals
     #[cfg(not(tarpaulin_include))]
     async fn on_signal(&mut self, _signal: Event) -> Option<Event> {
         None
     }
+    /// called upon temrination
     async fn terminate(&mut self) {}
+    /// default codec
     fn default_codec(&self) -> &str;
+    /// add recv pipeline (port IN)
     fn add_pipeline(&mut self, id: TremorUrl, addr: pipeline::Addr);
+    /// remove recv pipeline (port IN)
     fn remove_pipeline(&mut self, id: TremorUrl) -> bool;
+    /// add dest pipeline
     fn add_dest_pipeline(&mut self, port: Cow<'static, str>, id: TremorUrl, addr: pipeline::Addr);
+    /// remove dest pipeline
     fn remove_dest_pipeline(&mut self, port: Cow<'static, str>, id: TremorUrl) -> bool;
     #[cfg(not(tarpaulin_include))]
+    /// return true if active
     fn is_active(&self) -> bool {
         true
     }
+    /// if true events are acknowledged automatically by the sink manager
+    /// if false events need to be acked/failed manually by the sink impl
     #[cfg(not(tarpaulin_include))]
     fn auto_ack(&self) -> bool {
         true
     }
 }
 
-pub trait Impl {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>>;
+/// builds offramps
+pub trait Builder: Send {
+    /// construct an offramp
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>>;
 }
 
 // just a lookup
-#[cfg(not(tarpaulin_include))]
-pub fn lookup(name: &str, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
-    match name {
-        "amqp" => amqp::Amqp::from_config(config),
-        "blackhole" => blackhole::Blackhole::from_config(config),
-        "cb" => cb::Cb::from_config(config),
-        "debug" => debug::Debug::from_config(config),
-        "dns" => dns::Dns::from_config(config),
-        "elastic" => elastic::Elastic::from_config(config),
-        "exit" => exit::Exit::from_config(config),
-        "file" => file::File::from_config(config),
-        "kafka" => kafka::Kafka::from_config(config),
-        "kv" => kv::Kv::from_config(config),
-        "nats" => nats::Nats::from_config(config),
-        "newrelic" => newrelic::NewRelic::from_config(config),
-        "otel" => otel::OpenTelemetry::from_config(config),
-        "postgres" => postgres::Postgres::from_config(config),
-        "rest" => rest::Rest::from_config(config),
-        "stderr" => stderr::StdErr::from_config(config),
-        "stdout" => stdout::StdOut::from_config(config),
-        "tcp" => tcp::Tcp::from_config(config),
-        "udp" => udp::Udp::from_config(config),
-        "ws" => ws::Ws::from_config(config),
-        "gcs" => gcs::GoogleCloudStorage::from_config(config),
-        "gpub" => gpub::GoogleCloudPubSub::from_config(config),
-        _ => Err(format!("Offramp {} not known", name).into()),
-    }
-}
 
 pub(crate) struct Create {
     pub id: ServantId,
@@ -152,9 +152,27 @@ impl fmt::Debug for Create {
     }
 }
 
-/// This is control plane
+/// Offramp Manager control plane
 pub(crate) enum ManagerMsg {
+    /// register an offramp type with its corresponding builder
+    Register {
+        offramp_type: String,
+        builder: Box<dyn Builder>,
+        builtin: bool,
+    },
+    /// unregister an offramp type
+    Unregister(String),
+    /// asks for existence of the given type inside the runtime type registry
+    TypeExists(String, async_channel::Sender<bool>),
+    /// instantiate an offramp of provided type and config and send it back using the given sender
+    Instantiate {
+        offramp_type: String,
+        config: Option<OpConfig>,
+        sender: async_channel::Sender<Result<Box<dyn Offramp>>>,
+    },
+    /// Start an already instantiated offramp and start receiving events
     Create(async_channel::Sender<Result<Addr>>, Box<Create>),
+    /// Stop the whole manager
     Stop,
 }
 
@@ -431,6 +449,7 @@ impl Manager {
         let h = task::spawn(async move {
             info!("Offramp manager started");
             let mut offramp_id_gen = OfframpIdGen::new();
+            let mut types = HashMap::with_capacity(8);
             while let Ok(msg) = rx.recv().await {
                 match msg {
                     ManagerMsg::Stop => {
@@ -439,6 +458,55 @@ impl Manager {
                     }
                     ManagerMsg::Create(r, c) => {
                         self.offramp_task(r, *c, offramp_id_gen.next_id()).await?
+                    }
+                    ManagerMsg::Register {
+                        offramp_type,
+                        builder,
+                        builtin,
+                    } => {
+                        info!("Registering offramp type '{}'...", &offramp_type);
+                        match types.entry(offramp_type) {
+                            Entry::Occupied(e) => {
+                                error!("Offramp type '{}' already registered.", e.key());
+                            }
+                            Entry::Vacant(c) => {
+                                info!("Offramp type '{}' successfully registered.", c.key());
+                                c.insert((builder, builtin));
+                            }
+                        }
+                    }
+                    ManagerMsg::Unregister(offramp_type) => {
+                        if let Entry::Occupied(entry) = types.entry(offramp_type) {
+                            let (_builder, builtin) = entry.get();
+                            if *builtin {
+                                error!("Cannot unregister builtin offramp type '{}'.", entry.key());
+                            } else {
+                                let (k, _) = entry.remove_entry();
+                                info!("Unregistered offramp type '{}'.", k);
+                            }
+                        }
+                    }
+                    ManagerMsg::TypeExists(offramp_type, sender) => {
+                        let r = types.contains_key(&offramp_type);
+                        if let Err(e) = sender.send(r).await {
+                            error!("Error sending Offramp TypeExists result {}", e);
+                        }
+                    }
+                    ManagerMsg::Instantiate {
+                        offramp_type,
+                        config,
+                        sender,
+                    } => {
+                        let res = types
+                            .get(&offramp_type)
+                            .ok_or_else(|| {
+                                Error::from(ErrorKind::UnknownOfframpType(offramp_type.clone()))
+                            })
+                            .and_then(|(builder, _)| builder.from_config(&config));
+                        // send back the result
+                        if let Err(e) = sender.send(res).await {
+                            error!("Error sending Offramp Instantiate result: {}", e);
+                        }
                     }
                 };
                 info!("Stopping offramps...");

@@ -58,7 +58,9 @@ pub mod functions;
 pub(crate) mod lifecycle;
 /// Runtime metrics helper
 pub mod metrics;
+/// offramp stuff
 pub(crate) mod offramp;
+/// onramp stuff
 pub(crate) mod onramp;
 pub(crate) mod permge;
 pub(crate) mod pipeline;
@@ -66,12 +68,13 @@ pub(crate) mod pipeline;
 pub mod postprocessor;
 /// Offramp Postprocessors
 pub mod preprocessor;
-pub(crate) mod ramp;
 /// Tremor registry
 pub mod registry;
 /// The tremor repository
 pub mod repository;
+/// sink stuff
 pub(crate) mod sink;
+/// source stuff
 pub(crate) mod source;
 /// Tremor runtime system
 pub mod system;
@@ -83,23 +86,20 @@ pub mod utils;
 pub mod version;
 
 /// Tremor connector extensions
-pub mod connectors;
+pub(crate) mod connectors;
+
+pub(crate) mod common;
 
 use std::{io::BufReader, path::Path};
 
 use crate::errors::{Error, Result};
 
-pub(crate) type OnRampVec = Vec<OnRamp>;
-pub(crate) type OffRampVec = Vec<OffRamp>;
-pub(crate) type BindingVec = config::BindingVec;
-pub(crate) type MappingMap = config::MappingMap;
-
 pub(crate) use crate::config::{Binding, Connector, OffRamp, OnRamp};
 use crate::repository::BindingArtefact;
 use crate::url::TremorUrl;
-pub(crate) use serde_yaml::Value as OpConfig;
+pub use serde_yaml::Value as OpConfig;
 use system::World;
-pub(crate) use tremor_pipeline::Event;
+pub use tremor_pipeline::Event;
 use tremor_pipeline::{query::Query, FN_REGISTRY};
 use tremor_script::highlighter::Term as TermHighlighter;
 use tremor_script::Script;

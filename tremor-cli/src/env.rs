@@ -31,6 +31,7 @@ pub(crate) fn setup() -> Result<TremorCliEnv> {
 
     // Install runtime extensions from a single source of truth
     tremor_runtime::functions::install(&mut fun)?;
+    tremor_connectors::connectors::functions::install(&mut fun);
 
     Ok(TremorCliEnv {
         module_path,

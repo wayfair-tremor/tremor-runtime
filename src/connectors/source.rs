@@ -18,29 +18,66 @@ use crate::url::TremorUrl;
 use async_channel::{bounded, Receiver, Sender};
 use beef::Cow;
 use halfbrown::HashMap;
+use tremor_pipeline::EventOriginUri;
+use tremor_value::Value;
 
-pub(crate) enum SourceMsg {
+/// Messages a Source can receive
+pub enum SourceMsg {
+    /// connect a pipeline
     Connect {
+        /// port
         port: Cow<'static, str>,
+        /// pipelines to connect
         pipelines: Vec<(TremorUrl, pipeline::Addr)>,
     },
+    /// disconnect a pipeline from a port
     Disconnect {
+        /// port
         port: Cow<'static, str>,
+        /// url of the pipeline
         id: TremorUrl,
     },
     // TODO: fill those
+    /// start the source
     Start,
+    /// pause the source
     Pause,
+    /// resume the source
     Resume,
+    /// stop the source
     Stop,
+}
+
+/// reply from `Source::on_event`
+pub enum SourceReply {
+    /// A normal data event with a `Vec<u8>` for data
+    Data {
+        /// origin uri
+        origin_uri: EventOriginUri,
+        /// the data
+        data: Vec<u8>,
+        /// metadata associated with this data
+        meta: Option<Value<'static>>,
+        /// allow source to override codec when pulling event
+        /// the given string must be configured in the `config-map` as part of the source config
+        codec_override: Option<String>,
+        /// stream id of the data
+        stream: u64,
+    },
+    /// A stream is opened
+    StartStream(u64),
+    /// A stream is closed
+    EndStream(u64),
+    /// no new data/event, wait for the given ms
+    Empty(u64),
 }
 
 /// source part of a connector
 #[async_trait::async_trait]
-pub(crate) trait Source: Send {
+pub trait Source: Send {
     /// Pulls an event from the source if one exists
     /// determine the codec to be used
-    async fn pull_data(&mut self, id: u64) -> Result<crate::source::SourceReply>;
+    async fn pull_data(&mut self, id: u64) -> Result<SourceReply>;
     /// This callback is called when the data provided from
     /// pull_event did not create any events, this is needed for
     /// linked sources that require a 1:1 mapping between requests
@@ -51,30 +88,33 @@ pub(crate) trait Source: Send {
     // TODO: lifecycle callbacks
 }
 
-pub(crate) struct ChannelSource {
-    rx: Receiver<crate::source::SourceReply>,
-    tx: Sender<crate::source::SourceReply>,
+/// a source that
+pub struct ChannelSource {
+    rx: Receiver<SourceReply>,
+    tx: Sender<SourceReply>,
 }
 
 impl ChannelSource {
-    pub(crate) fn new(qsize: usize) -> Self {
+    /// constructor
+    pub fn new(qsize: usize) -> Self {
         let (tx, rx) = bounded(qsize);
         Self { tx, rx }
     }
 
-    pub(crate) fn sender(&self) -> Sender<crate::source::SourceReply> {
+    /// get the sender for the source
+    pub fn sender(&self) -> Sender<SourceReply> {
         self.tx.clone()
     }
 }
 
 #[async_trait::async_trait()]
 impl Source for ChannelSource {
-    async fn pull_data(&mut self, _id: u64) -> Result<crate::source::SourceReply> {
+    async fn pull_data(&mut self, _id: u64) -> Result<SourceReply> {
         match self.rx.try_recv() {
             Ok(reply) => Ok(reply),
             Err(async_channel::TryRecvError::Empty) => {
                 // TODO: configure pull interval in connector config?
-                Ok(crate::source::SourceReply::Empty(10))
+                Ok(SourceReply::Empty(10))
             }
             Err(e) => Err(e.into()),
         }
@@ -82,21 +122,24 @@ impl Source for ChannelSource {
 }
 
 // TODO make fields private and add some nice methods
-pub(crate) struct SourceContext {
+/// context for a source
+pub struct SourceContext {
     /// connector uid
-    pub(crate) uid: u64,
+    pub uid: u64,
     /// connector url
-    pub(crate) url: TremorUrl,
+    pub url: TremorUrl,
     // TODO: preprocessors/interceptor-chain?
 }
 
+/// address of a source
 #[derive(Clone, Debug)]
-pub(crate) struct SourceAddr {
-    pub(crate) addr: async_channel::Sender<SourceMsg>,
+pub struct SourceAddr {
+    /// the actual address
+    pub addr: async_channel::Sender<SourceMsg>,
 }
 
 /// source control plane
-pub(crate) async fn source_task(
+pub async fn source_task(
     receiver: async_channel::Receiver<SourceMsg>,
     _source: Box<dyn Source>,
     _ctx: SourceContext,

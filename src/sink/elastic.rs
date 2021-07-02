@@ -32,7 +32,6 @@
 
 #![cfg(not(tarpaulin_include))]
 
-use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
 use async_std::task::JoinHandle;
 use elastic::{
@@ -44,6 +43,7 @@ use simd_json::json;
 use std::time::Instant;
 use std::{iter, str};
 use tremor_pipeline::{EventId, EventIdGenerator};
+use crate::sink::prelude::*;
 use tremor_script::prelude::*;
 use tremor_script::Object;
 use tremor_value::literal;
@@ -72,8 +72,9 @@ pub struct Elastic {
     origin_uri: EventOriginUri,
 }
 
-impl offramp::Impl for Elastic {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
             let client = SyncClientBuilder::new()
@@ -84,7 +85,7 @@ impl offramp::Impl for Elastic {
             let (tx, _rx) = bounded(1); // dummy value
             let (res_tx, _res_rx) = bounded(1); // dummy value
 
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Elastic {
                 sink_url: TremorUrl::from_offramp_id("elastic")?, // just a dummy value, gonna be overwritten on init
                 client,
                 queue,

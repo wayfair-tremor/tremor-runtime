@@ -24,7 +24,6 @@
 // This is OK, Blackhole is benchmark only
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 
-use crate::sink::prelude::*;
 use halfbrown::HashMap;
 use hdrhistogram::serialization::{Deserializer, Serializer, V2Serializer};
 use hdrhistogram::Histogram;
@@ -33,6 +32,7 @@ use std::io::{self, stdout, Read, Write};
 use std::process;
 use std::result;
 use std::str;
+use crate::sink::prelude::*;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
@@ -60,12 +60,13 @@ pub struct Blackhole {
     buf: Vec<u8>,
 }
 
-impl offramp::Impl for Blackhole {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
             let now_ns = nanotime();
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Blackhole {
                 // config: config.clone(),
                 run_secs: config.stop_after_secs as f64,
                 stop_after: now_ns + (config.stop_after_secs + config.warmup_secs) * 1_000_000_000,

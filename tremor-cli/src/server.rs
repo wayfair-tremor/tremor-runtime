@@ -119,6 +119,7 @@ pub(crate) async fn run_dun(matches: &ArgMatches) -> Result<()> {
         .map(std::string::ToString::to_string);
     // TODO: Allow configuring this for offramps and pipelines
     let (world, handle) = World::start(64, storage_directory).await?;
+    tremor_connectors::register_builtins(&world).await?;
 
     if let Some(config_files) = matches.values_of("artefacts") {
         let mut yaml_files = Vec::with_capacity(16);

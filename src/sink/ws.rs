@@ -15,7 +15,6 @@
 #![cfg(not(tarpaulin_include))]
 
 use crate::sink::prelude::*;
-use crate::source::prelude::*;
 use async_channel::{bounded, unbounded, Receiver, Sender};
 use async_std::net::TcpStream;
 use async_tungstenite::tungstenite::error::Error as WsError;
@@ -50,6 +49,8 @@ pub struct Config {
     #[serde(default)]
     pub binary: bool,
 }
+
+impl ConfigImpl for Config {}
 
 enum WsConnectionMsg {
     Connected(WsUrl, Sender<SendEventConnectionMsg>),
@@ -418,10 +419,12 @@ fn message_to_event(
     }
     Ok(res)
 }
-impl offramp::Impl for Ws {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
-            let config: Config = serde_yaml::from_value(config.clone())?;
+            let config = Config::new(config)?;
             // ensure we have valid url
             Url::parse(&config.url)?;
 
@@ -430,7 +433,7 @@ impl offramp::Impl for Ws {
             // This is a dummy so we can set it later
             let (reply_tx, _) = bounded(1);
 
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Ws {
                 sink_url: TremorUrl::from_onramp_id("ws")?,  // dummy value
                 event_origin_uri: EventOriginUri::default(), // dummy
                 config,
@@ -442,7 +445,7 @@ impl offramp::Impl for Ws {
                 reply_tx,
                 preprocessors: vec![],  // dummy, overwritten in init
                 postprocessors: vec![], // dummy, overwritten in init
-                shared_codec: Box::new(crate::codec::null::Null {}), //dummy, overwritten in init
+                shared_codec: crate::codec::lookup("null")?, //dummy, overwritten in init
             }))
         } else {
             Err("[WS Offramp] Offramp requires a config".into())
@@ -720,7 +723,7 @@ mod test {
         let mut preprocessors = make_preprocessors(&["lines".to_string()])?;
         let mut ingest_ns = 42_u64;
         let ids = EventId::default();
-        let mut codec: Box<dyn Codec> = Box::new(codec::string::String {});
+        let mut codec: Box<dyn Codec> = crate::codec::lookup("string")?;
         let message = Message::Text("hello\nworld\n".to_string());
         let events = message_to_event(
             &sink_url,
@@ -745,8 +748,7 @@ mod test {
 
     #[test]
     fn event_to_message_ok() -> Result<()> {
-        let mut codec: Box<dyn Codec> =
-            Box::new(codec::json::Json::<codec::json::Unsorted>::default());
+        let mut codec: Box<dyn Codec> = crate::codec::lookup("json")?;
         let mut postprocessors = make_postprocessors(&["lines".to_string()])?;
         let mut data = Value::object_with_capacity(2);
         data.insert("snot", "badger")?;
@@ -770,8 +772,7 @@ mod test {
         let (reply_tx, reply_rx) = bounded(1000);
 
         let url = TremorUrl::parse("/offramp/ws/instance")?;
-        let mut codec: Box<dyn Codec> =
-            Box::new(codec::json::Json::<codec::json::Unsorted>::default());
+        let mut codec: Box<dyn Codec> = crate::codec::lookup("json")?;
         let config = Config {
             url: "http://idonotexist:65535/path".to_string(),
             binary: true,

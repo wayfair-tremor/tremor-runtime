@@ -12,47 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// quality of service utilities
 pub(crate) mod qos;
 
-/// Extensions for `CNCF OpenTelemetry` support
-pub mod otel;
-
-/// Extensions for the `Google Cloud Platform`
-pub mod gcp;
-
+/// prelude with commonly needed stuff imported
 pub(crate) mod prelude;
-/// TCP-Server connector
-pub(crate) mod tcp_server;
-
-pub(crate) mod pb;
-
+/// Sink part of a connector
 pub(crate) mod sink;
+/// source part of a connector
 pub(crate) mod source;
 
+/// reconnect logic for connectors
 pub(crate) mod reconnect;
+
+/// home for connector specific function
+pub(crate) mod functions;
+
+/// google cloud pubsub/storage/auth
+pub(crate) mod gcp;
+/// opentelemetry
+pub(crate) mod otel;
+/// protobuf helpers
+pub(crate) mod pb;
+
+/// tcp server connector impl
+pub(crate) mod tcp_server;
 
 use async_std::task::{self, JoinHandle};
 use beef::Cow;
 use either::Either;
 
+use crate::codec;
 use crate::config::Connector as ConnectorConfig;
-use crate::connectors::prelude::*;
 use crate::connectors::sink::{sink_task, Sink, SinkAddr, SinkContext, SinkMsg};
 use crate::connectors::source::{source_task, Source, SourceAddr, SourceContext, SourceMsg};
-
-use crate::codec;
+use crate::errors::{Error, ErrorKind, Result};
 use crate::pipeline;
 use crate::postprocessor::make_postprocessors;
+use crate::system::World;
 use crate::url::ports::IN;
 use crate::url::TremorUrl;
 use crate::OpConfig;
 use async_channel::bounded;
-use halfbrown::HashMap;
+use halfbrown::{Entry, HashMap};
 use reconnect::Reconnect;
 use tremor_common::ids::ConnectorIdGen;
 
+/// sender for connector manager messages
 pub type Sender = async_channel::Sender<ManagerMsg>;
 
+/// connector address
 #[derive(Clone, Debug)]
 pub struct Addr {
     uid: u64,
@@ -62,77 +71,157 @@ pub struct Addr {
     sink: Option<SinkAddr>,
 }
 
+impl Addr {
+    pub(crate) async fn send_sink(&self, msg: SinkMsg) -> Result<()> {
+        if let Some(sink) = self.sink.as_ref() {
+            sink.addr.send(msg).await?
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn send_source(&self, msg: SourceMsg) -> Result<()> {
+        if let Some(source) = self.source.as_ref() {
+            source.addr.send(msg).await?
+        }
+        Ok(())
+    }
+}
+
 /// Messages a Connector instance receives and acts upon
 pub enum Msg {
+    /// connect 1 or more pipelines to a port
     Connect {
+        /// port to which to connect
         port: Cow<'static, str>,
+        /// pipelines to connect
         pipelines: Vec<(TremorUrl, pipeline::Addr)>,
+        /// result receiver
         result_tx: async_channel::Sender<Result<()>>,
     },
+    /// disconnect pipeline `id` from the given `port`
     Disconnect {
+        /// port from which to disconnect
         port: Cow<'static, str>,
+        /// id of the pipeline to disconnect
         id: TremorUrl,
+        /// sender to receive a boolean whether this connector is not connected to anything
         tx: async_channel::Sender<Result<bool>>,
     },
+    /// initiate a reconnect attempt
     Reconnect, // times we attempted a reconnect, time to wait
     // TODO: fill as needed
+    /// start the connector
     Start,
+    /// pause the connector
     Pause,
+    /// resume the connector after a pause
     Resume,
+    /// stop the connector
     Stop,
 }
 
+/// msg used for connector creation
 #[derive(Debug)]
-pub(crate) struct Create {
+pub struct Create {
     servant_id: TremorUrl,
     config: ConnectorConfig,
 }
 
 impl Create {
+    /// constructor
     pub fn new(servant_id: TremorUrl, config: ConnectorConfig) -> Self {
         Self { servant_id, config }
     }
 }
 
+/// msg for the `ConnectorManager` handling all connectors
 pub enum ManagerMsg {
+    /// register a new connector type
+    Register {
+        /// the type of connector
+        connector_type: String,
+        /// the builder
+        builder: Box<dyn ConnectorBuilder>,
+        /// if this one is a builtin connector
+        builtin: bool,
+    },
+    /// unregister a connector type
+    Unregister(String),
+    /// create a new connector
     Create {
+        /// sender to send the create result to
         tx: async_channel::Sender<Result<Addr>>,
+        /// the create command
         create: Create,
     },
+    /// stop the connector manager
     Stop {
+        /// reason
         reason: String,
     },
 }
 
-#[cfg(not(tarpaulin_include))]
-pub fn lookup(name: &str, id: &TremorUrl, config: &Option<OpConfig>) -> Result<Box<dyn Connector>> {
-    match name {
-        "tcp-server" => tcp_server::TcpServer::from_config(id, config),
-        _ => Err(ErrorKind::UnknownConnector(name.to_string()).into()),
-    }
-}
-
-pub(crate) struct Manager {
+/// The connector manager - handling creation of connectors
+/// and handles available connector types
+pub struct Manager {
     qsize: usize,
 }
 
 impl Manager {
+    /// constructor
     pub fn new(qsize: usize) -> Self {
         Self { qsize }
     }
 
+    /// start the manager
     pub fn start(self) -> (JoinHandle<Result<()>>, Sender) {
         let (tx, rx) = bounded(self.qsize);
         let h = task::spawn(async move {
             info!("Connector manager started.");
             let mut connector_id_gen = ConnectorIdGen::new();
+            let mut known_connectors: HashMap<String, (Box<dyn ConnectorBuilder>, bool)> =
+                HashMap::with_capacity(16);
+
             loop {
                 match rx.recv().await {
                     Ok(ManagerMsg::Create { tx, create }) => {
-                        // TODO: actually start something
                         let url = create.servant_id.clone();
+                        // lookup and instantiate connector
+                        let connector = if let Some((builder, _)) =
+                            known_connectors.get(&create.config.binding_type)
+                        {
+                            let connector_res = builder.from_config(&url, &create.config.config);
+                            match connector_res {
+                                Ok(connector) => connector,
+                                Err(e) => {
+                                    error!(
+                                        "[Connector] Error instantiating connector {}: {}",
+                                        &url, e
+                                    );
+                                    tx.send(Err(e)).await?;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            error!(
+                                "[Connector] Connector Type '{}' unknown",
+                                &create.config.binding_type
+                            );
+                            tx.send(Err(ErrorKind::UnknownConnectorType(
+                                create.config.binding_type,
+                            )
+                            .into()))
+                                .await?;
+                            continue;
+                        };
                         if let Err(e) = self
-                            .connector_task(&tx, create, connector_id_gen.next_id())
+                            .connector_task(
+                                tx.clone(),
+                                create.servant_id,
+                                connector,
+                                create.config,
+                                connector_id_gen.next_id(),
+                            )
                             .await
                         {
                             error!(
@@ -140,6 +229,43 @@ impl Manager {
                                 &url, e
                             );
                             tx.send(Err(e)).await?;
+                        }
+                    }
+                    Ok(ManagerMsg::Register {
+                        connector_type,
+                        builder,
+                        builtin,
+                    }) => {
+                        info!("Registering {} Connector Type.", &connector_type);
+                        match known_connectors.entry(connector_type) {
+                            Entry::Occupied(e) => {
+                                warn!("Connector Type {} already registered.", e.key());
+                            }
+                            Entry::Vacant(e) => {
+                                info!(
+                                    "Connector Type {} registered{}.",
+                                    e.key(),
+                                    if builtin { " as builtin" } else { " " }
+                                );
+                                e.insert((builder, builtin));
+                            }
+                        }
+                    }
+                    Ok(ManagerMsg::Unregister(connector_type)) => {
+                        info!("Unregistering {} Connector Type.", &connector_type);
+                        match known_connectors.entry(connector_type) {
+                            Entry::Occupied(e) => {
+                                let (_, builtin) = e.get();
+                                if *builtin {
+                                    error!("Cannot unregister builtin Connector Type {}", e.key());
+                                } else {
+                                    info!("Connector Type {} unregistered.", e.key());
+                                    e.remove_entry();
+                                }
+                            }
+                            Entry::Vacant(e) => {
+                                error!("Connector Type {} not registered", e.key());
+                            }
                         }
                     }
                     Ok(ManagerMsg::Stop { reason }) => {
@@ -161,22 +287,18 @@ impl Manager {
     // instantiates the connector and starts listening for control plane messages
     async fn connector_task(
         &self,
-        addr_tx: &async_channel::Sender<Result<Addr>>,
-        create: Create,
+        addr_tx: async_channel::Sender<Result<Addr>>,
+        url: TremorUrl,
+        mut connector: Box<dyn Connector>,
+        config: ConnectorConfig,
         uid: u64,
     ) -> Result<()> {
         // channel for connector-level control plane communication
         let (msg_tx, msg_rx) = bounded(self.qsize);
 
-        // create connector instance
-        let mut connector = lookup(
-            create.config.binding_type.as_str(),
-            &create.servant_id,
-            &create.config.config,
-        )?;
-
-        let mut reconnect: Reconnect = Reconnect::from(create.config.reconnect);
+        let mut reconnect: Reconnect = Reconnect::from(config.reconnect);
         let mut connectivity = Connectivity::Disconnected;
+
         let mut connector_state = ConnectorState::Stopped;
         dbg!(connector_state);
 
@@ -184,7 +306,7 @@ impl Manager {
         // channel for sending SourceReply to the source part of this connector
         let mut source_ctx = SourceContext {
             uid,
-            url: create.servant_id.clone(),
+            url: url.clone(),
         };
         let source = connector
             .create_source(&mut source_ctx)
@@ -197,8 +319,7 @@ impl Manager {
             });
 
         // create sink instance
-        let codec_name = create
-            .config
+        let codec_name = config
             .codec
             .map(|s| match s {
                 Either::Left(s) => s,
@@ -207,17 +328,17 @@ impl Manager {
             .unwrap_or(connector.default_codec().to_string());
         let codec = codec::lookup(&codec_name)?;
         let postprocessors =
-            make_postprocessors(create.config.postprocessors.as_ref().unwrap_or(&vec![]))?;
+            make_postprocessors(config.postprocessors.as_ref().unwrap_or(&vec![]))?;
         let mut sink_ctx = SinkContext {
             uid,
-            url: create.servant_id.clone(),
+            url: url.clone(),
             codec,
             postprocessors,
         };
 
         let ctx = ConnectorContext {
             uid,
-            url: create.servant_id.clone(),
+            url: url.clone(),
         };
         let sink = connector.create_sink(&mut sink_ctx).await?.map(|sink| {
             // start sink task
@@ -228,14 +349,14 @@ impl Manager {
 
         let addr = Addr {
             uid,
-            url: create.servant_id.clone(),
+            url: url.clone(),
             sender: msg_tx,
             source,
             sink,
         };
         let send_addr = addr.clone();
         connector_state = ConnectorState::Initialized;
-        dbg!(connector_state);
+        dbg!(&connector_state);
 
         task::spawn::<_, Result<()>>(async move {
             // typical 1 pipeline connected to IN, OUT, ERR
@@ -354,11 +475,12 @@ impl Manager {
                         match (&new, &connectivity) {
                             (Connectivity::Disconnected, Connectivity::Connected) => {
                                 info!("[Connector::{}] Connected.", &addr.url);
-                                // TODO: notify sink
+                                // notify sink
+                                addr.send_sink(SinkMsg::ConnectionEstablished).await?;
                             }
                             (Connectivity::Connected, Connectivity::Disconnected) => {
                                 info!("[Connector::{}] Disconnected.", &addr.url);
-                                // TODO: notify sink
+                                addr.send_sink(SinkMsg::ConnectionLost).await?;
                             }
                             _ => {
                                 debug!("[Connector::{}] No change: {:?}", &addr.url, &new)
@@ -369,7 +491,20 @@ impl Manager {
                     Msg::Start => {
                         info!("[Connector::{}] Starting...", &addr.url);
                         // TODO: start connector
-                        connector.on_start(&ctx).await;
+                        connector_state = match connector.on_start(&ctx).await {
+                            Ok(new_state) => new_state,
+                            Err(e) => {
+                                error!("[Connector::{}] on_start Error: {}", &addr.url, e);
+                                ConnectorState::Failed
+                            }
+                        };
+                        info!(
+                            "[Connector::{}] started. New state: {:?}",
+                            &addr.url, &connector_state
+                        );
+                        // forward to source/sink if available
+                        addr.send_source(SourceMsg::Start).await?;
+                        addr.send_sink(SinkMsg::Start).await?;
 
                         // initiate connect asynchronously
                         addr.sender.send(Msg::Reconnect).await?;
@@ -378,25 +513,46 @@ impl Manager {
                     }
                     Msg::Pause => {
                         info!("[Connector::{}] Pausing...", &addr.url);
-                        // TODO: pause
+
                         connector.on_pause(&ctx).await;
+                        connector_state = ConnectorState::Paused;
+
+                        addr.send_source(SourceMsg::Pause).await?;
+                        addr.send_sink(SinkMsg::Pause).await?;
+
                         info!("[Connector::{}] Paused.", &addr.url);
                     }
                     Msg::Resume => {
                         info!("[Connector::{}] Resuming...", &addr.url);
                         // TODO: resume
                         connector.on_resume(&ctx).await;
+                        connector_state = ConnectorState::Running;
+
+                        addr.send_source(SourceMsg::Resume).await?;
+                        addr.send_sink(SinkMsg::Resume).await?;
+
                         info!("[Connector::{}] Resumed.", &addr.url);
                     }
                     Msg::Stop => {
                         info!("[Connector::{}] Stopping...", &addr.url);
                         // TODO: stop
                         connector.on_stop(&ctx).await;
+                        connector_state = ConnectorState::Stopped;
+
+                        addr.send_source(SourceMsg::Stop).await?;
+                        addr.send_sink(SinkMsg::Stop).await?;
+
                         info!("[Connector::{}] Stopped.", &addr.url);
                         break;
                     }
-                }
-            }
+                } // match
+
+                // TODO: react on connector state changes
+            } // while
+            info!(
+                "[Connector::{}] Connector Stopped. Reason: {:?}",
+                &addr.url, &connector_state
+            );
             Ok(())
         });
         addr_tx.send(Ok(send_addr)).await?;
@@ -404,27 +560,52 @@ impl Manager {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum ConnectorState {
+/// state of a connector
+#[derive(Debug, PartialEq)]
+pub enum ConnectorState {
+    /// connector has been initialized
     Initialized,
+    /// connector is running
     Running,
+    /// connector has been paused
     Paused,
+    /// connector was stopped
     Stopped,
+    /// connector failed to start
+    Failed,
 }
 
-pub(crate) struct ConnectorContext {
-    uid: u64,
-    url: TremorUrl,
+/// connector context
+pub struct ConnectorContext {
+    /// unique identifier
+    pub uid: u64,
+    /// url of the connector
+    pub url: TremorUrl,
 }
 
+/// describes connectivity state of the connector
 #[derive(Debug)]
-pub(crate) enum Connectivity {
+pub enum Connectivity {
+    /// connector is connected
     Connected,
+    /// connector is disconnected
     Disconnected,
 }
 
+/// A Connector connects the tremor runtime to the outside world.
+///
+/// It can be a source of events, as such it is polled for new data.
+/// It can also be a sink for events, as such events are sent to it from pipelines.
+/// A connector can act as sink and source or just as one of those.
+///
+/// A connector encapsulates the establishment and maintenance of connections to the outside world,
+/// such as tcp connections, file handles etc. etc.
+///
+/// It is a meta entity on top of the sink and source part.
+/// The connector has its own control plane and is an artefact in the tremor repository.
+/// It controls the sink and source parts which are connected to the rest of the runtime via links to pipelines.
 #[async_trait::async_trait]
-pub(crate) trait Connector: Send {
+pub trait Connector: Send {
     /// create a source part for this connector if applicable
     ///
     /// This function is called exactly once upon connector creation.
@@ -454,16 +635,29 @@ pub(crate) trait Connector: Send {
 
     /// called once when the connector is started
     /// `connect` will be called after this for the first time, leave connection attempts in `connect`.
-    /// This function will be used to re-establish connectivity, should it go down
     async fn on_start(&mut self, ctx: &ConnectorContext) -> Result<ConnectorState>;
 
+    /// called when the connector pauses
     async fn on_pause(&mut self, _ctx: &ConnectorContext) {}
+    /// called when the connector resumes
     async fn on_resume(&mut self, _ctx: &ConnectorContext) {}
+    /// called when the connector is stopped
     async fn on_stop(&mut self, _ctx: &ConnectorContext) {}
 
+    /// returns the default codec for this connector
     fn default_codec(&self) -> &str;
 }
 
-pub(crate) trait ConnectorBuilder {
-    fn from_config(id: &TremorUrl, config: &Option<OpConfig>) -> Result<Box<dyn Connector>>;
+/// something that is able to create a connector instance
+pub trait ConnectorBuilder: Sync + Send {
+    /// create a connector from the given `id` and `config`
+    fn from_config(&self, id: &TremorUrl, config: &Option<OpConfig>) -> Result<Box<dyn Connector>>;
+}
+
+#[cfg(not(tarpaulin_include))]
+pub async fn register_builtin_connectors(world: &World) -> Result<()> {
+    world
+        .register_builtin_connector_type("tcp_server", Box::new(tcp_server::Builder {}))
+        .await?;
+    Ok(())
 }

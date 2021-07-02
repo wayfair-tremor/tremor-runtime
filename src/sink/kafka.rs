@@ -106,17 +106,23 @@ impl fmt::Debug for Kafka {
     }
 }
 
-impl offramp::Impl for Kafka {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
             let producer = config.producer()?;
+            let (version_n, version_s) = rdkafka::util::get_rdkafka_version();
+            info!(
+                "[Offramp::kafka] Starting Kafka offramp with rdkafka 0x{:08x}, {}",
+                version_n, version_s
+            );
             // Create the thread pool where the expensive computation will be performed.
             let (dummy_tx, _) = bounded(1);
 
             // TODO: does this need to be unbounded?
             let (error_tx, error_rx) = bounded(crate::QSIZE);
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Kafka {
                 sink_url: TremorUrl::from_offramp_id("kafka")?, // dummy
                 config,
                 producer,

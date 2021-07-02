@@ -16,82 +16,72 @@ use crate::metrics::RampReporter;
 use crate::pipeline;
 use crate::repository::ServantId;
 use crate::source::prelude::*;
-use crate::source::{
-    amqp, blaster, cb, crononome, discord, file, gsub, kafka, metronome, nats, otel, postgres,
-    rest, sse, stdin, tcp, udp, ws,
-};
 use crate::url::TremorUrl;
+use crate::OpConfig;
 use async_std::task::{self, JoinHandle};
-use serde_yaml::Value;
+use halfbrown::{Entry, HashMap};
 use std::fmt;
 use tremor_common::ids::OnrampIdGen;
 use tremor_pipeline::EventId;
 
 pub(crate) type Sender = async_channel::Sender<ManagerMsg>;
 
-pub(crate) trait Impl {
-    fn from_config(id: &TremorUrl, config: &Option<Value>) -> Result<Box<dyn Onramp>>;
+/// builder for onramps
+pub trait Builder: Send {
+    /// build an onramp instance from the given `id` and `config`
+    fn from_config(&self, id: &TremorUrl, config: &Option<OpConfig>) -> Result<Box<dyn Onramp>>;
 }
 
+/// messages an onramp manager can receive
 #[derive(Clone, Debug)]
 pub enum Msg {
+    /// connect a pipeline to a given port
     Connect(Cow<'static, str>, Vec<(TremorUrl, pipeline::Addr)>),
+    /// disconnect a connected pipeline
     Disconnect {
+        /// url of the pipeline to disconnect
         id: TremorUrl,
+        /// receives true if the onramp is not connected anymore
         tx: async_channel::Sender<bool>,
     },
+    /// circuit breaker event
     Cb(CbAction, EventId),
     // TODO pick good naming here: LinkedEvent / Response / Result?
+    /// response from a linked onramp
     Response(tremor_pipeline::Event),
 }
 
+/// onramp address
 pub type Addr = async_channel::Sender<Msg>;
 
-pub(crate) struct OnrampConfig<'cfg> {
+/// config for onramps
+pub struct OnrampConfig<'cfg> {
+    /// unique numeric identifier
     pub onramp_uid: u64,
+    /// configured codec
     pub codec: &'cfg str,
+    /// map of dynamic codecs
     pub codec_map: halfbrown::HashMap<String, String>,
+    /// pre- and postprocessors
     pub processors: Processors<'cfg>,
+    /// thingy that reports metrics
     pub metrics_reporter: RampReporter,
+    /// flag: is this a linked transport?
     pub is_linked: bool,
+    /// if true only start event processing when the `err` port is connected
     pub err_required: bool,
 }
+
+/// onramp - legacy source of events
 #[async_trait::async_trait]
-pub(crate) trait Onramp: Send {
+pub trait Onramp: Send {
+    /// start the onramp
     async fn start(&mut self, config: OnrampConfig<'_>) -> Result<Addr>;
+    /// default codec
     fn default_codec(&self) -> &str;
 }
 
 // just a lookup
-#[cfg(not(tarpaulin_include))]
-pub(crate) fn lookup(
-    name: &str,
-    id: &TremorUrl,
-    config: &Option<Value>,
-) -> Result<Box<dyn Onramp>> {
-    match name {
-        "amqp" => amqp::Amqp::from_config(id, config),
-        "blaster" => blaster::Blaster::from_config(id, config),
-        "cb" => cb::Cb::from_config(id, config),
-        "file" => file::File::from_config(id, config),
-        "kafka" => kafka::Kafka::from_config(id, config),
-        "postgres" => postgres::Postgres::from_config(id, config),
-        "metronome" => metronome::Metronome::from_config(id, config),
-        "crononome" => crononome::Crononome::from_config(id, config),
-        "stdin" => stdin::Stdin::from_config(id, config),
-        "udp" => udp::Udp::from_config(id, config),
-        "tcp" => tcp::Tcp::from_config(id, config),
-        "rest" => rest::Rest::from_config(id, config),
-        "sse" => sse::Sse::from_config(id, config),
-        "ws" => ws::Ws::from_config(id, config),
-        "discord" => discord::Discord::from_config(id, config),
-        "otel" => otel::OpenTelemetry::from_config(id, config),
-        "nats" => nats::Nats::from_config(id, config),
-        "gsub" => gsub::GoogleCloudPubSub::from_config(id, config),
-        _ => Err(format!("[onramp:{}] Onramp type {} not known", id, name).into()),
-    }
-}
-
 pub(crate) struct Create {
     pub id: ServantId,
     pub stream: Box<dyn Onramp>,
@@ -112,6 +102,21 @@ impl fmt::Debug for Create {
 
 /// This is control plane
 pub(crate) enum ManagerMsg {
+    Register {
+        onramp_type: String,
+        builder: Box<dyn Builder>,
+        builtin: bool,
+    },
+    Unregister(String),
+    TypeExists(String, async_channel::Sender<bool>),
+    /// create an onramp instance from the given type and config and send it back
+    Instantiate {
+        onramp_type: String,
+        url: TremorUrl,
+        config: Option<OpConfig>,
+        sender: async_channel::Sender<Result<Box<dyn Onramp>>>,
+    },
+    // start an onramp, start polling for data if connected
     Create(async_channel::Sender<Result<Addr>>, Box<Create>),
     Stop,
 }
@@ -130,6 +135,7 @@ impl Manager {
 
         let h = task::spawn::<_, Result<()>>(async move {
             let mut onramp_id_gen = OnrampIdGen::new();
+            let mut types = HashMap::with_capacity(8);
             info!("Onramp manager started");
             loop {
                 match rx.recv().await {
@@ -170,6 +176,52 @@ impl Manager {
                                 r.send(Ok(addr)).await?;
                             }
                             Err(e) => error!("Creating an onramp failed: {}", e),
+                        }
+                    }
+                    Ok(ManagerMsg::Register {
+                        onramp_type,
+                        builder,
+                        builtin,
+                    }) => match types.entry(onramp_type) {
+                        Entry::Occupied(e) => {
+                            error!("Onramp type '{}' already registered.", e.key());
+                        }
+                        Entry::Vacant(e) => {
+                            info!("Onramp type '{}' successfully registered.", e.key());
+                            e.insert((builder, builtin));
+                        }
+                    },
+                    Ok(ManagerMsg::Unregister(onramp_type)) => {
+                        if let Entry::Occupied(e) = types.entry(onramp_type) {
+                            let (_builder, builtin) = e.get();
+                            if *builtin {
+                                error!("Cannot unregister builtin onramp type '{}'", e.key());
+                            } else {
+                                let (k, _) = e.remove_entry();
+                                info!("Unregistered onramp type '{}'", k);
+                            }
+                        }
+                    }
+                    Ok(ManagerMsg::TypeExists(onramp_type, sender)) => {
+                        let r = types.contains_key(&onramp_type);
+                        if let Err(e) = sender.send(r).await {
+                            error!("Error sending Offramp TypeExists result: {}", e);
+                        }
+                    }
+                    Ok(ManagerMsg::Instantiate {
+                        onramp_type,
+                        url,
+                        config,
+                        sender,
+                    }) => {
+                        let res = types
+                            .get(&onramp_type)
+                            .ok_or_else(|| {
+                                Error::from(ErrorKind::UnknownOnrampType(onramp_type.clone()))
+                            })
+                            .and_then(|(builder, _)| builder.from_config(&url, &config));
+                        if let Err(e) = sender.send(res).await {
+                            error!("Error sending Onramp Instantiate result: {}", e);
                         }
                     }
                     Err(e) => {

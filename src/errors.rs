@@ -20,15 +20,9 @@
 use crate::async_sink;
 use beef::Cow;
 use error_chain::error_chain;
+
 use hdrhistogram::{self, serialization as hdr_s};
-
 use tremor_influx as influx;
-
-// impl Clone for Error {
-//     fn clone(&self) -> Self {
-//         ErrorKind::ClonedError(format!("{}", self)).into()
-//     }
-// }
 
 impl From<sled::transaction::TransactionError<()>> for Error {
     fn from(e: sled::transaction::TransactionError<()>) -> Self {
@@ -38,18 +32,6 @@ impl From<sled::transaction::TransactionError<()>> for Error {
 
 impl From<hdr_s::DeserializeError> for Error {
     fn from(e: hdr_s::DeserializeError) -> Self {
-        Self::from(format!("{:?}", e))
-    }
-}
-
-impl From<Box<dyn std::error::Error>> for Error {
-    fn from(e: Box<dyn std::error::Error>) -> Self {
-        Self::from(format!("{:?}", e))
-    }
-}
-
-impl From<Box<dyn std::error::Error + Sync + Send>> for Error {
-    fn from(e: Box<dyn std::error::Error + Sync + Send>) -> Self {
         Self::from(format!("{:?}", e))
     }
 }
@@ -75,6 +57,24 @@ impl From<hdrhistogram::serialization::V2SerializeError> for Error {
 impl From<http_types::Error> for Error {
     fn from(e: http_types::Error) -> Self {
         Self::from(format!("{}", e))
+    }
+}
+
+impl<F> From<rental::RentalError<F, Box<Vec<u8>>>> for Error {
+    fn from(_e: rental::RentalError<F, Box<Vec<u8>>>) -> Self {
+        Self::from("Rental Error".to_string())
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for Error {
+    fn from(e: Box<dyn std::error::Error>) -> Self {
+        Self::from(format!("{:?}", e))
+    }
+}
+
+impl From<Box<dyn std::error::Error + Sync + Send>> for Error {
+    fn from(e: Box<dyn std::error::Error + Sync + Send>) -> Self {
+        Self::from(format!("{:?}", e))
     }
 }
 
@@ -108,12 +108,6 @@ impl<P> From<std::sync::PoisonError<P>> for Error {
     }
 }
 
-impl<F> From<rental::RentalError<F, Box<Vec<u8>>>> for Error {
-    fn from(_e: rental::RentalError<F, Box<Vec<u8>>>) -> Self {
-        Self::from("Rental Error".to_string())
-    }
-}
-
 #[cfg(test)]
 impl PartialEq for Error {
     fn eq(&self, _other: &Self) -> bool {
@@ -128,47 +122,46 @@ error_chain! {
         Pipeline(tremor_pipeline::errors::Error, tremor_pipeline::errors::ErrorKind);
     }
     foreign_links {
-        ValueError(tremor_value::Error);
-        Base64Error(base64::DecodeError);
-        YamlError(serde_yaml::Error) #[doc = "Error during yaml parsing"];
-        JsonError(simd_json::Error);
-        Io(std::io::Error);
-        SinkDequeueError(async_sink::SinkDequeueError);
-        SinkEnqueueError(async_sink::SinkEnqueueError);
-        FromUtf8Error(std::string::FromUtf8Error);
-        Utf8Error(std::str::Utf8Error);
-        ElasticError(elastic::Error);
-        KafkaError(rdkafka::error::KafkaError);
-        ParseIntError(std::num::ParseIntError);
-        TryFromIntError(std::num::TryFromIntError);
-        UrlParserError(url::ParseError);
-        ParseFloatError(std::num::ParseFloatError);
-        AnyhowError(anyhow::Error);
-        ChannelReceiveError(std::sync::mpsc::RecvError);
-        MsgPackDecoderError(rmp_serde::decode::Error);
-        MsgPackEncoderError(rmp_serde::encode::Error);
-        GrokError(grok::Error);
-        DateTimeParseError(chrono::ParseError);
-        SnappyError(snap::Error);
         AddrParseError(std::net::AddrParseError);
-        RegexError(regex::Error);
-        WsError(async_tungstenite::tungstenite::Error);
-        InfluxEncoderError(influx::EncoderError);
         AsyncChannelRecvError(async_channel::RecvError);
         AsyncChannelTryRecvError(async_channel::TryRecvError);
-        JsonAccessError(value_trait::AccessError);
-        CronError(cron::error::Error);
-        Postgres(postgres::Error);
+        Base64Error(base64::DecodeError);
+        ChannelReceiveError(std::sync::mpsc::RecvError);
         Common(tremor_common::Error);
-        Sled(sled::Error);
+        CronError(cron::error::Error);
+        DateTimeParseError(chrono::ParseError);
         DnsError(async_std_resolver::ResolveError);
+        ElasticError(elastic::Error);
+        FromUtf8Error(std::string::FromUtf8Error);
         GoogleAuthError(gouth::Error);
-        ReqwestError(reqwest::Error);
         HttpHeaderError(http::header::InvalidHeaderValue);
-        TonicTransportError(tonic::transport::Error);
-        TonicStatusError(tonic::Status);
+        InfluxEncoderError(influx::EncoderError);
+        Io(std::io::Error);
+        JsonAccessError(value_trait::AccessError);
+        JsonError(simd_json::Error);
+        KafkaError(rdkafka::error::KafkaError);
+        MsgPackDecoderError(rmp_serde::decode::Error);
+        MsgPackEncoderError(rmp_serde::encode::Error);
+        ParseIntError(std::num::ParseIntError);
+        ParseFloatError(std::num::ParseFloatError);
+        Postgres(postgres::Error);
+        RegexError(regex::Error);
+        ReqwestError(reqwest::Error);
         RustlsError(rustls::TLSError);
         Hex(hex::FromHexError);
+        SinkDequeueError(async_sink::SinkDequeueError);
+        SinkEnqueueError(async_sink::SinkEnqueueError);
+        Sled(sled::Error);
+        SnappyError(snap::Error);
+        Timeout(async_std::future::TimeoutError);
+        TonicStatusError(tonic::Status);
+        TonicTransportError(tonic::transport::Error);
+        TryFromIntError(std::num::TryFromIntError);
+        UrlParserError(url::ParseError);
+        Utf8Error(std::str::Utf8Error);
+        ValueError(tremor_value::Error);
+        WsError(async_tungstenite::tungstenite::Error);
+        YamlError(serde_yaml::Error) #[doc = "Error during yaml parsing"];
     }
 
     errors {
@@ -176,9 +169,21 @@ error_chain! {
             description("Unknown operator")
                 display("Unknown operator: {}::{}", n, o)
         }
+        UnknownOnrampType(t: String) {
+            description("Unknown onramp type")
+                display("Unknown onramp type {}", t)
+        }
+        UnknownOfframpType(t: String) {
+            description("Unknown offramp type")
+                display("Unknown offramp type {}", t)
+        }
         UnknownConnector(n: String) {
             description("Unknown connector")
                 display("Unknown connector {}", n)
+        }
+        UnknownConnectorType(t: String) {
+            description("Unknown connector type")
+                display("Unknown connector type {}", t)
         }
         ArtefactNotFound(id: String) {
             description("The artifact was not found")

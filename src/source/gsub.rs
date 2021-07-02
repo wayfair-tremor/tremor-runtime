@@ -13,11 +13,9 @@
 // limitations under the License.
 #![cfg(not(tarpaulin_include))]
 
+use crate::codec::Codec;
+use crate::connectors::gcp::{pubsub, pubsub_auth};
 use crate::source::prelude::*;
-use crate::{
-    codec::Codec,
-    connectors::gcp::{pubsub, pubsub_auth},
-};
 use googapis::google::pubsub::v1::subscriber_client::SubscriberClient;
 use std::env;
 use std::{fs::File, io::Read};
@@ -68,11 +66,12 @@ impl Int {
     }
 }
 
-impl onramp::Impl for GoogleCloudPubSub {
-    fn from_config(id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
+pub(crate) struct Builder {}
+impl onramp::Builder for Builder {
+    fn from_config(&self, id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
-            Ok(Box::new(Self {
+            Ok(Box::new(GoogleCloudPubSub {
                 config,
                 onramp_id: id.clone(),
             }))

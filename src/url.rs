@@ -140,6 +140,10 @@ impl TremorUrl {
         Self::parse(&format!("/offramp/{}", id))
     }
 
+    /// Creates a URL from a given connector id
+    ///
+    /// # Errors
+    ///  * if the passed ID isn't a valid connector id (no utf-8)
     pub fn from_connector_id(id: &str) -> Result<Self> {
         Self::parse(&format!("/connector/{}", id))
     }

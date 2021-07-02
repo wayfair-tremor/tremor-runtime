@@ -26,7 +26,7 @@ use std::mem;
 use std::str;
 
 /// Postprocessor trait
-pub trait Postprocessor: Send {
+pub trait Postprocessor: Send + Sync {
     /// Canonical name of the postprocessor
     fn name(&self) -> &str;
     /// process data

@@ -15,8 +15,6 @@
 // TODO: Add correlation of reads and replies.
 
 #![cfg(not(tarpaulin_include))]
-use crate::sink::{prelude::*, Reply};
-use crate::source::prelude::*;
 use async_channel::Sender;
 use async_std_resolver::{
     lookup::Lookup,
@@ -28,6 +26,7 @@ use async_std_resolver::{
 };
 use halfbrown::HashMap;
 use std::boxed::Box;
+use crate::sink::{prelude::*, Reply};
 use tremor_value::literal;
 
 pub struct Dns {
@@ -37,8 +36,9 @@ pub struct Dns {
     // reply: Option<Sender<Reply>>,
 }
 
-impl offramp::Impl for Dns {
-    fn from_config(_config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, _config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         let event_origin_uri = EventOriginUri {
             uid: 0,
             scheme: "tremor-dns".to_string(),

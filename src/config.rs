@@ -135,12 +135,12 @@ impl ReconnectConfig {
     const DEFAULT_INTERVAL_MS: u64 = 1000;
     const DEFAULT_GROWTH_RATE: f64 = 1.2;
 
-    fn new(interval_ms: u64) -> Self {
-        Self {
-            interval_ms,
-            ..Self::default()
-        }
-    }
+    // fn new(interval_ms: u64) -> Self {
+    //     Self {
+    //         interval_ms,
+    //         ..Self::default()
+    //     }
+    // }
 
     fn default_interval_ms() -> u64 {
         Self::DEFAULT_INTERVAL_MS
@@ -161,6 +161,7 @@ impl Default for ReconnectConfig {
     }
 }
 
+/// Codec name and configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodecConfig {
@@ -169,9 +170,12 @@ pub struct CodecConfig {
     pub(crate) config: tremor_pipeline::ConfigMap,
 }
 
+/// Connector configuration - only the parts applicable to all connectors
+/// Specific parts are catched in the `config` map.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connector {
+    /// connector identifier
     pub id: Id,
     #[serde(rename = "type")]
     pub(crate) binding_type: String,
