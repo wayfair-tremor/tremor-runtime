@@ -457,11 +457,9 @@ impl Sink for Rest {
         let default_method = self.config.method.0;
         let endpoint = self.config.endpoint.clone();
         let mut config_headers = self.config.headers.clone();
-        // if there is additional auth specified for sink...
-        match self.config.auth.as_str() {
-          "gcp" => config_headers = block_on(auth::merge_gcp_headers(&config_headers))?,
-          _ => (),
-        }
+        // this could be a match case if other sink auth types are introduced
+        // for now clippy doesn't like equality checks disguised as match cases.
+        if self.config.auth.as_str() == "gcp" { config_headers = block_on(auth::merge_gcp_headers(&config_headers))? }
         let cloned_sink_url = sink_url.clone();
         self.sink_url = sink_url.clone();
 
