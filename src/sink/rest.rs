@@ -16,10 +16,10 @@
 
 use crate::codec::Codec;
 use crate::errors::ErrorKind;
-#[allow(unused_imports)]
 use crate::connectors::gcp::{auth};
 use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
+use futures::executor::block_on;
 use halfbrown::HashMap;
 use http_types::mime::Mime;
 use http_types::{headers::HeaderValue, Method};
@@ -229,6 +229,11 @@ impl<'de> Deserialize<'de> for SerdeMethod {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    /// authorization method, if any.
+    /// Options are empty string (default) and "gcp"
+    #[serde(default)]
+    pub auth: String,
+
     /// endpoint url - given as String or struct
     #[serde(deserialize_with = "string_or_struct", default)]
     pub endpoint: Endpoint,
@@ -451,10 +456,12 @@ impl Sink for Rest {
             .collect::<HashMap<String, Box<dyn Codec>>>();
         let default_method = self.config.method.0;
         let endpoint = self.config.endpoint.clone();
-        #[cfg(uses_gcp_auth)]
-        let config_headers = auth::make_headers(self.config.headers.clone());
-        #[cfg(not(uses_gcp_auth))]
-        let config_headers = self.config.headers.clone();
+        let mut config_headers = self.config.headers.clone();
+        // if there is additional auth specified for sink...
+        match self.config.auth.as_str() {
+          "gcp" => config_headers = block_on(auth::merge_gcp_headers(&config_headers))?,
+          _ => (),
+        }
         let cloned_sink_url = sink_url.clone();
         self.sink_url = sink_url.clone();
 
