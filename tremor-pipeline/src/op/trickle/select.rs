@@ -1303,7 +1303,7 @@ impl Operator for TrickleSelect {
             let artificial_event = Event {
                 id: signal.id.clone(),
                 ingest_ns,
-                data: (Value::null(), Value::null()).into(),
+                data: (Value::null(), Value::object()).into(),
                 ..Event::default()
             };
             let local_stack = tremor_script::interpreter::LocalStack::with_size(*locals);

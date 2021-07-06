@@ -1,7 +1,0 @@
-id: main
-interface:
-  inputs: [ in ]
-  outputs: [ out ]
-nodes: []
-links:
-  in: [ out ]

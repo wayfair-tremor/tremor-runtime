@@ -1,0 +1,8 @@
+status: 0
+name: select target expression tests with window and group by
+asserts:
+  - source: out.log
+    equals_file: expected.json
+    contains:
+      - |
+        {"event":{"aggregate":2,"meta":[{"foo":"bar"},{"foo":"bar"}],"window":"win","group":[2,"[2]"],"from_group":2,"event_last":"baz","state":null},"meta":{}}

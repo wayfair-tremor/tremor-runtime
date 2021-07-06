@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use super::{AggrRegistry, LineValue, Registry, TremorFnWrapper, ValueAndMeta};
+pub use super::{AggrRegistry, EventPayload, Registry, TremorFnWrapper, ValueAndMeta};
 pub use crate::ctx::{EventContext, EventOriginUri};
 pub use crate::errors::CompilerError;
 pub use crate::interpreter::{AggrType, ExecOpts};

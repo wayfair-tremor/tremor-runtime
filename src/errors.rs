@@ -166,6 +166,7 @@ error_chain! {
         TonicTransportError(tonic::transport::Error);
         TonicStatusError(tonic::Status);
         RustlsError(rustls::TLSError);
+        Hex(hex::FromHexError);
     }
 
     errors {

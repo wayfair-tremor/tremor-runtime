@@ -109,7 +109,7 @@ impl Source for Int {
         match self.rx.try_recv() {
             Ok(OpenTelemetryEvents::Metrics(metrics)) => {
                 if self.config.metrics {
-                    let data: Value = metrics::resource_metrics_to_json(metrics)?;
+                    let data: Value = metrics::resource_metrics_to_json(metrics);
                     return Ok(SourceReply::Structured {
                         origin_uri: self.origin.clone(),
                         data: data.into(),
@@ -131,7 +131,7 @@ impl Source for Int {
             }
             Ok(OpenTelemetryEvents::Trace(traces)) => {
                 if self.config.trace {
-                    let data: Value = trace::resource_spans_to_json(traces)?;
+                    let data: Value = trace::resource_spans_to_json(traces);
                     return Ok(SourceReply::Structured {
                         origin_uri: self.origin.clone(),
                         data: data.into(),

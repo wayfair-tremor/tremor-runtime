@@ -77,7 +77,7 @@ impl Codec for Syslog {
                 param.insert(name.to_owned(), Value::from(value))?;
                 e.push(param);
             }
-            temp.insert(element.id.into(), Value::Array(e));
+            temp.insert(element.id.into(), Value::from(e));
         }
         if temp.is_empty() {
             es_msg.insert("structured_data".into(), Value::null());

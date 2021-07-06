@@ -38,7 +38,7 @@ pub fn install(reg: &mut Registry) -> Result<()> {
         Ok(Value::from(instance!()))
     }))
     .insert(tremor_fn!(system|version(_context) {
-        Ok(Value::String(VERSION.into()).into_static())
+        Ok(Value::from(VERSION).into_static())
     }));
 
     Ok(())

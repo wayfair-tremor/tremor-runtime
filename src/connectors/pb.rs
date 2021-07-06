@@ -17,7 +17,7 @@ use tremor_value::Value;
 use value_trait::ValueAccess;
 
 pub(crate) fn maybe_string_to_pb(data: Option<&Value<'_>>) -> Result<String> {
-    if let Some(Value::String(s)) = data {
+    if let Some(s) = data.as_str() {
         Ok(s.to_string())
     } else if data.is_none() {
         Ok("".to_string())
@@ -37,84 +37,46 @@ pub(crate) fn maybe_int_to_pbu64(data: Option<&Value<'_>>) -> Result<u64> {
 }
 
 pub(crate) fn maybe_int_to_pbi32(data: Option<&Value<'_>>) -> Result<i32> {
-    data.map_or_else(
-        || Err("Expected an json i64 to convert to pb i32".into()),
-        |data| {
-            data.as_i32()
-                .ok_or_else(|| Error::from("not coercable to i32"))
-        },
-    )
+    data.as_i32()
+        .ok_or_else(|| Error::from("not coercable to i32"))
 }
 
 pub(crate) fn maybe_int_to_pbi64(data: Option<&Value<'_>>) -> Result<i64> {
-    data.map_or_else(
-        || Err("Expected an json i64 to convert to pb i64".into()),
-        |data| {
-            data.as_i64()
-                .ok_or_else(|| Error::from("not coercable to i64"))
-        },
-    )
+    data.as_i64()
+        .ok_or_else(|| Error::from("not coercable to i64"))
 }
 
 pub(crate) fn maybe_int_to_pbu32(data: Option<&Value<'_>>) -> Result<u32> {
-    data.map_or_else(
-        || {
-            Err(
-                "Expected a json value convertible to pb u32 without truncation or sign loss"
-                    .into(),
-            )
-        },
-        |data| {
-            data.as_u32()
-                .ok_or_else(|| Error::from("not coercable to u32"))
-        },
-    )
+    data.as_u32()
+        .ok_or_else(|| Error::from("not coercable to u32"))
 }
 
 pub(crate) fn maybe_double_to_pb(data: Option<&Value<'_>>) -> Result<f64> {
-    data.map_or_else(
-        || Err("Expected a json f64 to convert to pb f64".into()),
-        |data| {
-            data.as_f64()
-                .ok_or_else(|| Error::from("not coercable to f64"))
-        },
-    )
+    data.as_f64()
+        .ok_or_else(|| Error::from("not coercable to f64"))
 }
 
 pub(crate) fn maybe_bool_to_pb(data: Option<&Value<'_>>) -> Result<bool> {
-    data.map_or_else(
-        || Err("Expected a json bool to convert to pb bool".into()),
-        |data| {
-            data.as_bool()
-                .ok_or_else(|| Error::from("not coercable to bool"))
-        },
-    )
+    data.as_bool()
+        .ok_or_else(|| Error::from("not coercable to bool"))
 }
 
 pub(crate) fn f64_repeated_to_pb(json: Option<&Value<'_>>) -> Result<Vec<f64>> {
-    if let Some(Value::Array(json)) = json {
-        let mut arr = Vec::with_capacity(json.len());
-        for data in json {
-            let value = maybe_double_to_pb(Some(data))?;
-            arr.push(value);
-        }
-        return Ok(arr);
-    }
-
-    Err("Unable to map json value to repeated f64 pb".into())
+    json.as_array()
+        .ok_or("Unable to map json value to repeated f64 pb")?
+        .iter()
+        .map(Some)
+        .map(maybe_double_to_pb)
+        .collect()
 }
 
 pub(crate) fn u64_repeated_to_pb(json: Option<&Value<'_>>) -> Result<Vec<u64>> {
-    if let Some(Value::Array(json)) = json {
-        let mut arr = Vec::with_capacity(json.len());
-        for data in json {
-            let value = maybe_int_to_pbu64(Some(data))?;
-            arr.push(value);
-        }
-        return Ok(arr);
-    }
-
-    Err("Unable to map json value to repeated u64 pb".into())
+    json.as_array()
+        .ok_or("Unable to map json value to repeated u64 pb")?
+        .iter()
+        .map(Some)
+        .map(maybe_int_to_pbu64)
+        .collect()
 }
 
 #[cfg(test)]
@@ -126,7 +88,6 @@ mod test {
     use proptest::proptest;
     use proptest::{bits::u64, prelude::*};
     use tremor_value::literal;
-    use tremor_value::StaticNode;
 
     #[test]
     fn error_checks() -> Result<()> {
@@ -147,13 +108,8 @@ mod test {
 
     #[test]
     fn boolean() -> Result<()> {
-        assert!(maybe_bool_to_pb(Some(&Value::Static(StaticNode::Bool(
-            true
-        ))))?);
-        assert!(!maybe_bool_to_pb(Some(&Value::Static(StaticNode::Bool(
-            false
-        ))))?);
-
+        assert!(maybe_bool_to_pb(Some(&Value::from(true)))?);
+        assert!(!maybe_bool_to_pb(Some(&Value::from(false)))?);
         Ok(())
     }
 
@@ -175,100 +131,81 @@ mod test {
 
     proptest! {
         #[test]
-        fn prop_string(
-            arb_strings in prop::collection::vec(".*", 0..100),
-        ) {
-            for expected in arb_strings {
-                let json = Value::String(expected.clone().into());
-                let pb = maybe_string_to_pb(Some(&json))?;
-                prop_assert_eq!(&expected, &pb);
-                prop_assert_eq!(pb.len(), expected.len());
-            }
+        fn prop_string(arb_string in ".*") {
+            let json = Value::from(arb_string.clone());
+            let pb = maybe_string_to_pb(Some(&json))?;
+            prop_assert_eq!(&arb_string, &pb);
+            prop_assert_eq!(pb.len(), arb_string.len());
         }
 
         #[test]
-        fn prop_pb_u64(
-            arb_ints in prop::collection::vec(prop::num::u64::ANY, 0..100),
-        ) {
-            for expected in arb_ints {
-                let json = Value::Static(StaticNode::U64(expected));
-                let pb = maybe_int_to_pbu64(Some(&json))?;
-                // TODO error on i64?
-                prop_assert_eq!(expected, pb);
-            }
+        fn prop_pb_u64(arb_int in prop::num::u64::ANY) {
+            let json = Value::from(arb_int);
+            let pb = maybe_int_to_pbu64(Some(&json))?;
+            // TODO error on i64?
+            prop_assert_eq!(arb_int, pb);
         }
 
         #[test]
-        fn prop_pb_i64(
-            arb_ints in prop::collection::vec(prop::num::i64::ANY, 0..100),
-        ) {
-            for expected in arb_ints {
-                let json = Value::Static(StaticNode::I64(expected));
-                let pb = maybe_int_to_pbi64(Some(&json))?;
-                // TODO error on i64?
-                prop_assert_eq!(expected, pb);
-            }
+        fn prop_pb_i64(arb_int in prop::num::i64::ANY) {
+            let json = Value::from(arb_int);
+            let pb = maybe_int_to_pbi64(Some(&json))?;
+            // TODO error on i64?
+            prop_assert_eq!(arb_int, pb);
         }
 
         #[test]
-        fn prop_pb_u32(
-            arb_ints in prop::collection::vec(prop::num::u32::ANY, 0..100),
-        ) {
-            for expected in arb_ints {
-                let json = Value::Static(StaticNode::U64(expected as u64));
-                let pb = maybe_int_to_pbu32(Some(&json))?;
-                prop_assert_eq!(expected, pb);
-            }
+        fn prop_pb_u32(arb_int in prop::num::u32::ANY) {
+
+            let json = Value::from(arb_int);
+            let pb = maybe_int_to_pbu32(Some(&json))?;
+            prop_assert_eq!(arb_int, pb);
+
         }
 
         #[test]
-        fn prop_pb_i32(
-            arb_ints in prop::collection::vec(prop::num::i32::ANY, 0..100),
-        ) {
-            for expected in arb_ints {
-                let json = Value::Static(StaticNode::I64(expected as i64));
-                let pb = maybe_int_to_pbi32(Some(&json))?;
-                prop_assert_eq!(expected, pb);
-            }
+        fn prop_pb_i32(arb_int in prop::num::i32::ANY) {
+
+            let json = Value::from(arb_int);
+            let pb = maybe_int_to_pbi32(Some(&json))?;
+            prop_assert_eq!(arb_int, pb);
         }
 
         #[test]
         fn prop_pb_f64(
-            arb_ints in prop::collection::vec(prop::num::f64::POSITIVE | prop::num::f64::NEGATIVE, 0..100),
+            arb_int in prop::num::f64::POSITIVE | prop::num::f64::NEGATIVE,
         ) {
-            for expected in arb_ints {
-                let json = Value::Static(StaticNode::F64(expected as f64));
-                let pb = maybe_double_to_pb(Some(&json))?;
-                prop_assert_eq!(expected, pb);
-            }
+            let json = Value::from(arb_int);
+            let pb = maybe_double_to_pb(Some(&json))?;
+            prop_assert_eq!(arb_int, pb);
         }
 
         #[test]
         fn prop_pb_f64_repeated((vec, _index) in fveci()) {
-                let json: Value = literal!(vec.clone());
-                let pb = f64_repeated_to_pb(Some(&json))?;
-                prop_assert_eq!(&vec, &pb);
-                prop_assert_eq!(pb.len(), vec.len());
+            let json: Value = literal!(vec.clone());
+            let pb = f64_repeated_to_pb(Some(&json))?;
+            prop_assert_eq!(&vec, &pb);
+            prop_assert_eq!(pb.len(), vec.len());
         }
 
         #[test]
         fn prop_pb_u64_repeated((vec, _index) in uveci()) {
-                let json: Value = literal!(vec.clone());
-                let pb = u64_repeated_to_pb(Some(&json))?;
-                prop_assert_eq!(&vec, &pb);
-                prop_assert_eq!(pb.len(), vec.len());
+            let json: Value = literal!(vec.clone());
+            let pb = u64_repeated_to_pb(Some(&json))?;
+            prop_assert_eq!(&vec, &pb);
+            prop_assert_eq!(pb.len(), vec.len());
         }
     }
 
     #[test]
     fn bad_boolean() {
-        assert!(maybe_bool_to_pb(Some(&Value::String("snot".into()))).is_err());
+        assert!(maybe_bool_to_pb(Some(&Value::from("snot"))).is_err());
     }
 
     #[test]
     fn bad_string() {
         // NOTE no coercion, no casting
-        assert!(maybe_string_to_pb(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
+        assert!(maybe_string_to_pb(Some(&Value::from(false))).is_err());
 
         // NOTE We allow None for string and map to pb default of "" ( empty string )
         assert_eq!(Ok("".to_string()), maybe_string_to_pb(None));
@@ -276,31 +213,21 @@ mod test {
 
     #[test]
     fn bad_int_numerics() {
-        assert!(maybe_int_to_pbu64(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
-        assert!(maybe_int_to_pbi64(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
-        assert!(maybe_int_to_pbu32(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
-        assert!(maybe_int_to_pbi32(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
+        assert!(maybe_int_to_pbu64(Some(&Value::from(false))).is_err());
+        assert!(maybe_int_to_pbi64(Some(&Value::from(false))).is_err());
+        assert!(maybe_int_to_pbu32(Some(&Value::from(false))).is_err());
+        assert!(maybe_int_to_pbi32(Some(&Value::from(false))).is_err());
     }
 
     #[test]
     fn bad_double_numerics() {
-        assert!(maybe_double_to_pb(Some(&Value::Static(StaticNode::Bool(false)))).is_err());
+        assert!(maybe_double_to_pb(Some(&Value::from(false))).is_err());
     }
 
     #[test]
     fn bad_repeated_numerics() {
-        assert!(
-            f64_repeated_to_pb(Some(&Value::Array(vec![Value::Static(StaticNode::Bool(
-                true
-            ))])))
-            .is_err()
-        );
-        assert!(
-            u64_repeated_to_pb(Some(&Value::Array(vec![Value::Static(StaticNode::Bool(
-                true
-            ))])))
-            .is_err()
-        );
+        assert!(f64_repeated_to_pb(Some(&Value::from(vec![true]))).is_err());
+        assert!(u64_repeated_to_pb(Some(&Value::from(vec![true]))).is_err());
     }
 
     #[test]

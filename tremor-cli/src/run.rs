@@ -33,7 +33,7 @@ use tremor_script::{
     ctx::{EventContext, EventOriginUri},
     lexer::Tokenizer,
 };
-use tremor_script::{LineValue, Value, ValueAndMeta};
+use tremor_script::{EventPayload, Value, ValueAndMeta};
 struct Ingress {
     is_interactive: bool,
     is_pretty: bool,
@@ -344,7 +344,7 @@ fn run_trickle_source(matches: &ArgMatches, src: String) -> Result<()> {
         id,
         &mut egress,
         &move |runnable, id, egress, at, event| {
-            let value = LineValue::new(vec![], |_| ValueAndMeta::from(event.clone_static()));
+            let value = EventPayload::new(vec![], |_| ValueAndMeta::from(event.clone_static()));
 
             let mut continuation = vec![];
 

@@ -13,18 +13,18 @@
 // limitations under the License.
 
 use super::super::pb;
-use super::common;
-use super::id;
-use super::resource;
+use super::{
+    common::{self, instrumentation_library_to_pb, maybe_instrumentation_library_to_json, EMPTY},
+    id,
+    resource::{self, resource_to_pb},
+};
 use crate::errors::Result;
+
 use tremor_otelapis::opentelemetry::proto::{
     collector::logs::v1::ExportLogsServiceRequest,
     logs::v1::{InstrumentationLibraryLogs, LogRecord, ResourceLogs},
 };
-use tremor_value::literal;
-
-use tremor_value::Value;
-use value_trait::ValueAccess;
+use tremor_value::{literal, prelude::*, Value};
 
 fn affirm_traceflags_valid(traceflags: u32) -> Result<u32> {
     if (traceflags == 128) || (traceflags == 0) {
@@ -66,126 +66,117 @@ where
     Ok(text)
 }
 
-pub(crate) fn instrumentation_library_logs_to_json<'event>(
-    pb: Vec<tremor_otelapis::opentelemetry::proto::logs::v1::InstrumentationLibraryLogs>,
-) -> Result<Value<'event>> {
-    let mut json = Vec::new();
-    for data in pb {
-        let mut logs = Vec::new();
-        for log in data.logs {
-            logs.push(literal!({
-                "name": log.name,
-                "time_unix_nano": log.time_unix_nano,
-                "severity_number": affirm_severity_number_valid(log.severity_number)?,
-                "severity_text": affirm_severity_text_valid(&log.severity_text)?,
-                "flags": affirm_traceflags_valid(log.flags)?,
-                "span_id": id::hex_span_id_to_json(&log.span_id),
-                "trace_id": id::hex_trace_id_to_json(&log.trace_id),
-                "attributes": common::key_value_list_to_json(log.attributes)?,
-                "dropped_attributes_count": log.dropped_attributes_count,
-                "body": common::maybe_any_value_to_json(log.body)?,
-            }));
-        }
-        json.push(literal!({
-            "instrumentation_library": common::maybe_instrumentation_library_to_json(data.instrumentation_library),
-            "logs": logs
-        }));
-    }
-
-    Ok(literal!(json))
+fn log_record_to_json(log: LogRecord) -> Result<Value<'static>> {
+    Ok(literal!({
+        "name": log.name,
+        "time_unix_nano": log.time_unix_nano,
+        "severity_number": affirm_severity_number_valid(log.severity_number)?,
+        "severity_text": affirm_severity_text_valid(&log.severity_text)?,
+        "flags": affirm_traceflags_valid(log.flags)?,
+        "span_id": id::hex_span_id_to_json(&log.span_id),
+        "trace_id": id::hex_trace_id_to_json(&log.trace_id),
+        "attributes": common::key_value_list_to_json(log.attributes),
+        "dropped_attributes_count": log.dropped_attributes_count,
+        "body": common::maybe_any_value_to_json(log.body),
+    }))
+}
+pub(crate) fn instrumentation_library_logs_to_json(
+    pb: Vec<InstrumentationLibraryLogs>,
+) -> Result<Value<'static>> {
+    pb.into_iter()
+        .map(|data| {
+            let logs = data
+                .logs
+                .into_iter()
+                .map(log_record_to_json)
+                .collect::<Result<Value>>()?;
+            let mut e = literal!({ "logs": logs });
+            if let Some(il) = data.instrumentation_library {
+                let il = maybe_instrumentation_library_to_json(il);
+                e.try_insert("instrumentation_library", il);
+            }
+            Ok(e)
+        })
+        .collect()
 }
 
 pub(crate) fn maybe_instrumentation_library_logs_to_pb(
     data: Option<&Value<'_>>,
 ) -> Result<Vec<InstrumentationLibraryLogs>> {
-    if let Some(Value::Array(data)) = data {
-        let mut pb = Vec::with_capacity(data.len());
-        for ill in data {
-            if let Value::Object(data) = ill {
-                let mut logs = Vec::new();
-                if let Some(Value::Array(data)) = data.get("logs") {
-                    for log in data {
-                        let name: String = pb::maybe_string_to_pb(log.get("name"))?;
-                        let time_unix_nano: u64 =
-                            pb::maybe_int_to_pbu64(log.get("time_unix_nano"))?;
-                        let severity_number: i32 = affirm_severity_number_valid(
-                            pb::maybe_int_to_pbi32(log.get("severity_number"))?,
-                        )?;
-                        let severity_text: String = affirm_severity_text_valid(
-                            &pb::maybe_string_to_pb(log.get("severity_text"))?,
-                        )?;
-                        let flags =
-                            affirm_traceflags_valid(pb::maybe_int_to_pbu32(log.get("flags"))?)?;
-                        let span_id = id::hex_span_id_to_pb(log.get("span_id"))?;
-                        let trace_id = id::hex_trace_id_to_pb(log.get("trace_id"))?;
-                        let dropped_attributes_count: u32 =
-                            pb::maybe_int_to_pbu32(log.get("dropped_attributes_count"))?;
-                        let attributes = common::maybe_key_value_list_to_pb(log.get("attributes"))?;
-                        let body = Some(common::maybe_any_value_to_pb(log.get("body"))?);
-                        logs.push(LogRecord {
-                            time_unix_nano,
-                            severity_number,
-                            severity_text,
-                            name,
-                            body,
-                            attributes,
-                            dropped_attributes_count,
-                            flags,
-                            trace_id,
-                            span_id,
-                        });
-                    }
-                }
-                let il = data.get("instrumentation_library");
-                let e = InstrumentationLibraryLogs {
-                    instrumentation_library: common::maybe_instrumentation_library_to_pb(il)?,
-                    logs,
-                };
-                pb.push(e);
-            }
-        }
-        return Ok(pb);
-    }
+    data.as_array()
+        .ok_or("Invalid json mapping for InstrumentationLibraryLogs")?
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|ill| {
+            let logs = ill
+                .get("logs")
+                .and_then(Value::as_array)
+                .unwrap_or(&EMPTY)
+                .iter()
+                .map(|log| {
+                    Ok(LogRecord {
+                        name: pb::maybe_string_to_pb(log.get("name"))?,
+                        time_unix_nano: pb::maybe_int_to_pbu64(log.get("time_unix_nano"))?,
+                        severity_number: affirm_severity_number_valid(pb::maybe_int_to_pbi32(
+                            log.get("severity_number"),
+                        )?)?,
+                        severity_text: affirm_severity_text_valid(&pb::maybe_string_to_pb(
+                            log.get("severity_text"),
+                        )?)?,
+                        flags: affirm_traceflags_valid(pb::maybe_int_to_pbu32(log.get("flags"))?)?,
+                        span_id: id::hex_span_id_to_pb(log.get("span_id"))?,
+                        trace_id: id::hex_trace_id_to_pb(log.get("trace_id"))?,
+                        dropped_attributes_count: pb::maybe_int_to_pbu32(
+                            log.get("dropped_attributes_count"),
+                        )?,
+                        attributes: common::maybe_key_value_list_to_pb(log.get("attributes"))?,
+                        body: log.get("body").map(common::any_value_to_pb),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-    Err("Invalid json mapping for InstrumentationLibraryLogs".into())
+            Ok(InstrumentationLibraryLogs {
+                instrumentation_library: ill
+                    .get("instrumentation_library")
+                    .map(instrumentation_library_to_pb)
+                    .transpose()?,
+                logs,
+            })
+        })
+        .collect()
 }
 
-pub(crate) fn resource_logs_to_json<'event>(
-    request: ExportLogsServiceRequest,
-) -> Result<Value<'event>> {
-    let mut json = Vec::with_capacity(request.resource_logs.len());
-    for log in request.resource_logs {
-        json.push(literal!({
-                "instrumentation_library_logs":
-                    instrumentation_library_logs_to_json(log.instrumentation_library_logs)?,
-                "resource": resource::resource_to_json(log.resource)?
-        }));
-    }
-    Ok(literal!({ "logs": json }))
+pub(crate) fn resource_logs_to_json(request: ExportLogsServiceRequest) -> Result<Value<'static>> {
+    let logs = request
+        .resource_logs
+        .into_iter()
+        .map(|log| {
+            let ill = instrumentation_library_logs_to_json(log.instrumentation_library_logs)?;
+            let mut base = literal!({ "instrumentation_library_logs": ill });
+            if let Some(r) = log.resource {
+                base.try_insert("resource", resource::resource_to_json(r));
+            };
+            Ok(base)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(literal!({ "logs": logs }))
 }
 
 pub(crate) fn resource_logs_to_pb(json: &Value<'_>) -> Result<Vec<ResourceLogs>> {
-    if let Value::Object(json) = json {
-        if let Some(Value::Array(json)) = json.get("logs") {
-            let mut pb = Vec::with_capacity(json.len());
-            for json in json {
-                if let Value::Object(json) = json {
-                    let instrumentation_library_logs = maybe_instrumentation_library_logs_to_pb(
-                        json.get("instrumentation_library_logs"),
-                    )?;
-                    let resource = Some(resource::maybe_resource_to_pb(json.get("resource"))?);
-                    let item = ResourceLogs {
-                        resource,
-                        instrumentation_library_logs,
-                    };
-                    pb.push(item);
-                }
-            }
-            return Ok(pb);
-        }
-    }
-
-    Err("Invalid json mapping for otel logs message - cannot convert to pb".into())
+    json.get_array("logs")
+        .ok_or("Invalid json mapping for otel logs message - cannot convert to pb")?
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|json| {
+            Ok(ResourceLogs {
+                instrumentation_library_logs: maybe_instrumentation_library_logs_to_pb(
+                    json.get("instrumentation_library_logs"),
+                )?,
+                resource: json.get("resource").map(resource_to_pb).transpose()?,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

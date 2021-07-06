@@ -179,7 +179,7 @@ impl Sink for Dns {
                     let meta = if let Some(c) = m.get("correlation") {
                         literal!({ "correlation": c.clone_static() })
                     } else {
-                        Value::null()
+                        Value::object()
                     };
 
                     let error_e = Event {

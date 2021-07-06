@@ -1,0 +1,31 @@
+define tumbling window win
+with
+  interval = core::datetime::with_seconds(1)
+end;
+
+define script preprocess
+script
+  # set a metatadata variable we expect to be gone in the end
+  let $foo = "bar";
+  event
+end;
+create script preprocess;
+
+create stream post;
+select event from in into preprocess;
+
+# checking for all the possible references possible
+select {
+  "aggregate": aggr::stats::count(),
+  "group": group,
+  "from_group": event.values,
+  "event_last": aggr::win::last(event.foo),
+  "meta": aggr::win::collect_flattened($),
+  "state": state,
+  "window": window
+} from preprocess[win] group by set(each(event.values)) into post;
+
+select {
+  "event": event,
+  "meta": $
+} from post into out;

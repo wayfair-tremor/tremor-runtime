@@ -1,0 +1,15 @@
+define script recurse
+script
+	fn factorial_(acc, n) of
+		case (acc, n) when n > 0 =>
+			recur(acc * n, n - 1)
+		default => acc
+
+	end;
+  fn factorial(n) with
+		factorial_(1, n)
+	end;
+end;
+create script recurse;
+select event from in into recurse;
+select event from recurse into out;

@@ -25,13 +25,13 @@ use http_types::mime::Mime;
 use http_types::{headers::HeaderValue, Method};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::borrow::Borrow;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use std::{borrow::Borrow, pin::Pin};
 use surf::{Body, Client, Request, Response};
 use tremor_pipeline::{EventId, EventIdGenerator, OpMeta};
 use tremor_script::Object;
@@ -602,8 +602,7 @@ async fn codec_task(
                 // send CB insight -> handle status >= 400
                 let status = response.status();
 
-                let mut meta = Object::with_capacity(1);
-                meta.insert("time".into(), Value::from(duration));
+                let meta = literal!({ "time": duration });
                 let mut cb = if status.is_client_error() || status.is_server_error() {
                     // when the offramp is linked to pipeline, we want to send
                     // the response back and not consume it yet (or log about it)
@@ -685,7 +684,7 @@ async fn codec_task(
                         .send(sink::Reply::Insight(Event {
                             id: id.clone(),
                             op_meta,
-                            data: (Value::null(), Value::from(meta)).into(),
+                            data: (Value::null(), meta).into(),
                             cb,
                             ingest_ns: nanotime(),
                             ..Event::default()
@@ -974,16 +973,13 @@ async fn build_response_events<'response>(
     let mut events = Vec::with_capacity(preprocessed.len());
     for pp in preprocessed {
         events.push(
-            LineValue::try_new(vec![Pin::new(pp)], |mutd| {
-                // ALLOW: we define mutd as a vector of one element above
-                let mut_data = mutd[0].as_mut().get_mut();
+            EventPayload::try_new::<crate::Error, _>(pp, |mut_data| {
                 let body = the_chosen_one
                     .decode(mut_data, nanotime())?
                     .unwrap_or_else(Value::object);
 
                 Ok(ValueAndMeta::from_parts(body, meta.clone())) // TODO: no need to clone the last element?
             })
-            .map_err(|e: rental::RentalError<Error, _>| e.0)
             .map(|data| {
                 let mut id = response_ids.next_id();
                 id.track(event_id);

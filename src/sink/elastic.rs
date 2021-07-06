@@ -67,7 +67,7 @@ pub struct Elastic {
     queue: AsyncSink<u64>,
     insight_tx: Sender<sink::Reply>,
     is_linked: bool,
-    response_sender: Sender<(LineValue, Cow<'static, str>)>,
+    response_sender: Sender<(EventPayload, Cow<'static, str>)>,
     response_task_handle: Option<JoinHandle<Result<()>>>,
     origin_uri: EventOriginUri,
 }
@@ -116,7 +116,7 @@ fn build_bulk_error_data(
     payload: Value<'static>,
     origin_uri: Option<&EventOriginUri>,
     maybe_correlation: Option<Value<'static>>,
-) -> Result<LineValue> {
+) -> Result<EventPayload> {
     let mut meta = literal!({
         "elastic": {
             "_id": item.id().to_string(),
@@ -147,7 +147,7 @@ fn build_bulk_success_data(
     payload: Value<'static>,
     origin_uri: Option<&EventOriginUri>,
     maybe_correlation: Option<Value<'static>>,
-) -> LineValue {
+) -> EventPayload {
     let mut meta = literal!({
         "elastic": {
             "_id": item.id().to_string(),
@@ -293,7 +293,7 @@ impl Elastic {
                 // if we have more than one event (batched), correlation will be an array with `null` or an actual value
                 // for the event at the batch position
                 let correlation_value = event.correlation_meta();
-                let meta = correlation_value.map_or_else(Value::null, |correlation| {
+                let meta = correlation_value.map_or_else(Value::object, |correlation| {
                     literal!({ "correlation": correlation })
                 });
 
@@ -495,7 +495,7 @@ impl Elastic {
 async fn response_task(
     mut id_gen: EventIdGenerator,
     origin_uri: EventOriginUri,
-    rx: Receiver<(LineValue, Cow<'static, str>)>,
+    rx: Receiver<(EventPayload, Cow<'static, str>)>,
     insight_tx: Sender<sink::Reply>,
 ) -> Result<()> {
     loop {

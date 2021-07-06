@@ -15,33 +15,25 @@
 use super::common;
 use crate::connectors::pb;
 use crate::errors::Result;
+use simd_json::ValueAccess;
 use tremor_otelapis::opentelemetry::proto::resource::v1::Resource;
-use tremor_value::literal;
-use tremor_value::Value;
+use tremor_value::{literal, Value};
 
-pub(crate) fn resource_to_json<'event>(pb: Option<Resource>) -> Result<Value<'event>> {
-    if let Some(data) = pb {
-        Ok(literal!({
-            "attributes": common::key_value_list_to_json(data.attributes)?,
-            "dropped_attributes_count": data.dropped_attributes_count,
-        }))
-    } else {
-        Ok(literal!({ "attributes": {}, "dropped_attributes_count": 0 }))
-    }
+pub(crate) fn resource_to_json(pb: Resource) -> Value<'static> {
+    literal!({
+        "attributes": common::key_value_list_to_json(pb.attributes),
+        "dropped_attributes_count": pb.dropped_attributes_count,
+    })
 }
 
-pub(crate) fn maybe_resource_to_pb(json: Option<&Value<'_>>) -> Result<Resource> {
-    if let Some(Value::Object(json)) = json {
-        let dropped_attributes_count: u32 =
-            pb::maybe_int_to_pbu32(json.get("dropped_attributes_count"))?;
-        let attributes = common::maybe_key_value_list_to_pb(json.get("attributes"))?;
-        let pb = Resource {
-            attributes,
-            dropped_attributes_count,
-        };
-        return Ok(pb);
-    }
-    Err("Invalid json mapping for Resource".into())
+pub(crate) fn resource_to_pb(json: &Value<'_>) -> Result<Resource> {
+    let json = json
+        .as_object()
+        .ok_or("Invalid json mapping for Resource")?;
+    Ok(Resource {
+        dropped_attributes_count: pb::maybe_int_to_pbu32(json.get("dropped_attributes_count"))?,
+        attributes: common::maybe_key_value_list_to_pb(json.get("attributes"))?,
+    })
 }
 
 #[cfg(test)]
@@ -49,11 +41,6 @@ mod tests {
     use tremor_otelapis::opentelemetry::proto::common::v1::{any_value, AnyValue, KeyValue};
 
     use super::*;
-
-    #[test]
-    fn bad_mapping() {
-        assert!(maybe_resource_to_pb(None).is_err());
-    }
 
     #[test]
     fn resource() -> Result<()> {
@@ -66,8 +53,8 @@ mod tests {
             }],
             dropped_attributes_count: 9,
         };
-        let json = resource_to_json(Some(pb.clone()))?;
-        let back_again = maybe_resource_to_pb(Some(&json))?;
+        let json = resource_to_json(pb.clone());
+        let back_again = resource_to_pb(&json)?;
         let expected: Value = literal!({
             "attributes": { "snot": "badger" },
             "dropped_attributes_count": 9

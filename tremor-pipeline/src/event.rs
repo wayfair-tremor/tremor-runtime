@@ -15,7 +15,7 @@
 use crate::{CbAction, EventId, OpMeta, SignalKind};
 use std::mem::swap;
 use tremor_script::prelude::*;
-use tremor_script::{EventOriginUri, LineValue, Value};
+use tremor_script::{EventOriginUri, EventPayload, Value};
 
 /// A tremor event
 #[derive(
@@ -25,7 +25,7 @@ pub struct Event {
     /// The event ID
     pub id: EventId,
     /// The event Data
-    pub data: LineValue,
+    pub data: EventPayload,
     /// Nanoseconds at when the event was ingested
     pub ingest_ns: u64,
     /// URI to identify the origin of the event
@@ -480,20 +480,16 @@ mod test {
         assert_eq!(false, e.is_empty());
 
         e.is_batch = true;
-        e.data = (Value::null(), Value::object_with_capacity(0)).into();
+        e.data = (Value::null(), Value::object()).into();
         assert_eq!(true, e.is_empty());
 
-        e.data = (
-            Value::array_with_capacity(0),
-            Value::object_with_capacity(0),
-        )
-            .into();
+        e.data = (Value::array(), Value::object()).into();
         assert_eq!(true, e.is_empty());
 
         let mut value = Value::array_with_capacity(2);
         value.push(Value::from(true))?; // dummy events
         value.push(Value::from(false))?;
-        e.data = (value, Value::object_with_capacity(0)).into();
+        e.data = (value, Value::object()).into();
         assert_eq!(false, e.is_empty());
         Ok(())
     }
@@ -501,8 +497,9 @@ mod test {
     fn correlation_meta() -> Result<()> {
         let mut e = Event::default();
         assert!(e.correlation_meta().is_none());
-        let mut m = Value::object();
-        m.try_insert("correlation", 1);
+        let mut m = literal!({
+            "correlation": 1
+        });
         e.data = (Value::null(), m.clone()).into();
 
         assert_eq!(e.correlation_meta().unwrap(), 1);

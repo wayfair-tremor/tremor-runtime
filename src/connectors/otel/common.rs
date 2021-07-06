@@ -14,7 +14,7 @@
 
 use crate::connectors::pb;
 use crate::errors::Result;
-use halfbrown::HashMap;
+use simd_json::Builder;
 use tremor_otelapis::opentelemetry::proto::common::v1::{
     any_value, AnyValue, ArrayValue, InstrumentationLibrary, KeyValue, KeyValueList, StringKeyValue,
 };
@@ -22,37 +22,33 @@ use tremor_value::StaticNode;
 
 use tremor_value::{literal, Value};
 use value_trait::ValueAccess;
+pub(crate) const EMPTY: Vec<Value> = Vec::new();
 
-pub(crate) fn any_value_to_json<'event>(
-    pb: tremor_otelapis::opentelemetry::proto::common::v1::AnyValue,
-) -> Result<Value<'event>> {
+pub(crate) fn any_value_to_json(pb: AnyValue) -> Value<'static> {
     use any_value::Value as Inner;
     let v: Value = match pb.value {
         Some(Inner::StringValue(v)) => v.into(),
         Some(Inner::BoolValue(v)) => v.into(),
         Some(Inner::IntValue(v)) => v.into(),
         Some(Inner::DoubleValue(v)) => v.into(),
-        Some(Inner::ArrayValue(v)) => v
-            .values
-            .into_iter()
-            .map(|v| any_value_to_json(v).ok())
-            .collect(),
+        Some(Inner::ArrayValue(v)) => v.values.into_iter().map(any_value_to_json).collect(),
         Some(Inner::KvlistValue(v)) => {
-            let mut record = HashMap::with_capacity(v.values.len());
-            for e in v.values {
-                record.insert(
-                    e.key.into(),
-                    match e.value {
-                        Some(v) => any_value_to_json(v)?,
-                        None => Value::Static(StaticNode::Null), // TODO check conformance - not sure this is correct at all
-                    },
-                );
-            }
-            Value::Object(Box::new(record))
+            // let mut record = HashMap::with_capacity(v.values.len());
+            v.values
+                .into_iter()
+                .map(|e| {
+                    (
+                        e.key,
+                        e.value.map(any_value_to_json).unwrap_or_default(), // TODO check conformance - not sure this is correct at all
+                    )
+                })
+                .collect()
+
+            // Value::from(record)
         }
-        None => Value::Static(StaticNode::Null),
+        None => Value::null(),
     };
-    Ok(v)
+    v
 }
 
 pub(crate) fn any_value_to_pb(data: &Value<'_>) -> AnyValue {
@@ -111,97 +107,63 @@ pub(crate) fn any_value_to_pb(data: &Value<'_>) -> AnyValue {
     }
 }
 
-pub(crate) fn maybe_any_value_to_pb(data: Option<&Value<'_>>) -> Result<AnyValue> {
-    data.map_or_else(
-        || Err("Unable to map to pb otel any_value".into()),
-        |x| Ok(any_value_to_pb(x)),
-    )
+pub(crate) fn maybe_any_value_to_json(pb: Option<AnyValue>) -> Option<Value<'static>> {
+    pb.map(any_value_to_json)
 }
 
-pub(crate) fn maybe_any_value_to_json<'event>(
-    pb: Option<AnyValue>,
-) -> Result<Option<Value<'event>>> {
-    match pb {
-        Some(any) => Ok(Some(any_value_to_json(any)?)),
-        None => Ok(None),
-    }
-}
-
-pub(crate) fn string_key_value_to_json<'event>(pb: Vec<StringKeyValue>) -> Value<'event> {
-    let mut json = HashMap::with_capacity(pb.len());
-    for kv in pb {
-        json.insert(kv.key.into(), kv.value.into());
-    }
-
-    Value::Object(Box::new(json))
+pub(crate) fn string_key_value_to_json(pb: Vec<StringKeyValue>) -> Value<'static> {
+    pb.into_iter()
+        .map(|StringKeyValue { key, value }| (key, value))
+        .collect()
 }
 
 pub(crate) fn string_key_value_to_pb(data: Option<&Value<'_>>) -> Result<Vec<StringKeyValue>> {
-    if let Some(Value::Object(data)) = data {
-        let mut pb = Vec::with_capacity(data.len());
-        for (key, value) in data.iter() {
-            let key: String = key.to_string();
-            let value: String = pb::maybe_string_to_pb(Some(value))?;
-            pb.push(StringKeyValue { key, value });
-        }
-        return Ok(pb);
-    }
-
-    Err("Unable to map json to Vec<StringKeyValue> pb".into())
+    data.as_object()
+        .ok_or("Unable to map json to Vec<StringKeyValue> pb")?
+        .iter()
+        .map(|(key, value)| {
+            let key = key.to_string();
+            let value = pb::maybe_string_to_pb(Some(value))?;
+            Ok(StringKeyValue { key, value })
+        })
+        .collect()
 }
 
-pub(crate) fn key_value_list_to_json<'event>(pb: Vec<KeyValue>) -> Result<Value<'event>> {
-    let mut json: HashMap<beef::Cow<str>, Value> = HashMap::with_capacity(pb.len());
-    for kv in pb {
-        if let Some(v) = maybe_any_value_to_json(kv.value)? {
-            json.insert(kv.key.into(), v);
-        } else {
-            json.insert(kv.key.into(), Value::Static(StaticNode::Null));
-        }
-    }
-
-    Ok(Value::Object(Box::new(json)))
+pub(crate) fn key_value_list_to_json(pb: Vec<KeyValue>) -> Value<'static> {
+    pb.into_iter()
+        .map(|KeyValue { key, value }| (key, maybe_any_value_to_json(value)))
+        .collect()
 }
 
 pub(crate) fn maybe_key_value_list_to_pb(data: Option<&Value<'_>>) -> Result<Vec<KeyValue>> {
-    if let Some(Value::Object(data)) = data {
-        let mut pb: Vec<KeyValue> = Vec::with_capacity(data.len());
-        for (key, value) in data.iter() {
+    data.as_object()
+        .ok_or("Expected a json object, found otherwise - cannot map to pb")?
+        .iter()
+        .map(|(key, value)| {
             let key = key.to_string();
-            let value = Some(maybe_any_value_to_pb(Some(&value))?);
-            pb.push(KeyValue { key, value })
-        }
-        return Ok(pb);
-    }
-    Err("Expected a json object, found otherwise - cannot map to pb".into())
+            let value = Some(any_value_to_pb(value));
+            Ok(KeyValue { key, value })
+        })
+        .collect()
 }
 
-pub(crate) fn maybe_instrumentation_library_to_json<'event>(
-    pb: Option<InstrumentationLibrary>,
-) -> Value<'event> {
-    match pb {
-        None => Value::Static(StaticNode::Null),
-        Some(il) => literal!({
-            "name": il.name,
-            "version": il.version,
-        }),
-    }
+pub(crate) fn maybe_instrumentation_library_to_json(il: InstrumentationLibrary) -> Value<'static> {
+    literal!({
+        "name": il.name,
+        "version": il.version,
+    })
 }
 
-pub(crate) fn maybe_instrumentation_library_to_pb(
-    data: Option<&Value<'_>>,
-) -> Result<Option<InstrumentationLibrary>> {
-    match data {
-        Some(data) => Ok(Some(InstrumentationLibrary {
-            name: pb::maybe_string_to_pb((*data).get("name"))?,
-            version: pb::maybe_string_to_pb((*data).get("version"))?,
-        })),
-        None => Ok(None),
-    }
+pub(crate) fn instrumentation_library_to_pb(data: &Value<'_>) -> Result<InstrumentationLibrary> {
+    Ok(InstrumentationLibrary {
+        name: pb::maybe_string_to_pb((*data).get("name"))?,
+        version: pb::maybe_string_to_pb((*data).get("version"))?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use simd_json::prelude::*;
     use tremor_otelapis::opentelemetry::proto::common::v1::{ArrayValue, KeyValueList};
 
     use super::*;
@@ -209,15 +171,9 @@ mod tests {
     #[test]
     fn any_value_none() -> Result<()> {
         let pb = AnyValue { value: None };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::Null), json);
-        assert_eq!(pb, back_again);
-
-        let pb = AnyValue { value: None };
-        let json = any_value_to_json(pb.clone())?;
-        let back_again = maybe_any_value_to_pb(Some(&json))?;
-        assert_eq!(Value::Static(StaticNode::Null), json);
+        assert!(json.is_null());
         assert_eq!(pb, back_again);
 
         Ok(())
@@ -228,17 +184,17 @@ mod tests {
         let pb = AnyValue {
             value: Some(any_value::Value::StringValue("snot".into())),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::String("snot".into()), json);
+        assert_eq!(json, "snot");
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::StringValue("".into())),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::String("".into()), json);
+        assert_eq!(json, "");
         assert_eq!(pb, back_again);
 
         Ok(())
@@ -249,17 +205,17 @@ mod tests {
         let pb = AnyValue {
             value: Some(any_value::Value::BoolValue(true)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::Bool(true)), json);
+        assert_eq!(json, true);
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::BoolValue(false)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::Bool(false)), json);
+        assert_eq!(json, false);
         assert_eq!(pb, back_again);
 
         Ok(())
@@ -270,25 +226,25 @@ mod tests {
         let pb = AnyValue {
             value: Some(any_value::Value::IntValue(0i64)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::I64(0)), json);
+        assert_eq!(json, 0);
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::IntValue(std::i64::MAX)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::I64(std::i64::MAX)), json);
+        assert_eq!(json, std::i64::MAX);
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::IntValue(std::i64::MIN)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::I64(std::i64::MIN)), json);
+        assert_eq!(json, std::i64::MIN);
         assert_eq!(pb, back_again);
 
         Ok(())
@@ -299,25 +255,25 @@ mod tests {
         let pb = AnyValue {
             value: Some(any_value::Value::DoubleValue(0f64)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::F64(0f64)), json);
+        assert_eq!(json, 0f64);
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::DoubleValue(std::f64::MAX)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::F64(std::f64::MAX)), json);
+        assert_eq!(json, std::f64::MAX);
         assert_eq!(pb, back_again);
 
         let pb = AnyValue {
             value: Some(any_value::Value::DoubleValue(std::f64::MIN)),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
-        assert_eq!(Value::Static(StaticNode::F64(std::f64::MIN)), json);
+        assert_eq!(json, std::f64::MIN);
         assert_eq!(pb, back_again);
 
         Ok(())
@@ -333,7 +289,7 @@ mod tests {
                 values: vec![snot],
             })),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
         let expected: Value = literal!(["snot"]);
         assert_eq!(expected, json);
@@ -342,7 +298,7 @@ mod tests {
         let pb = AnyValue {
             value: Some(any_value::Value::ArrayValue(ArrayValue { values: vec![] })),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
         let expected: Value = literal!([]);
         assert_eq!(expected, json);
@@ -363,7 +319,7 @@ mod tests {
                 }],
             })),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
         let expected: Value = literal!({"badger": "snot"});
         assert_eq!(expected, json);
@@ -374,7 +330,7 @@ mod tests {
                 values: vec![],
             })),
         };
-        let json = any_value_to_json(pb.clone())?;
+        let json = any_value_to_json(pb.clone());
         let back_again = any_value_to_pb(&json);
         let expected: Value = literal!({});
         assert_eq!(expected, json);
@@ -392,7 +348,7 @@ mod tests {
             key: "snot".into(),
             value: Some(snot),
         }];
-        let json = key_value_list_to_json(pb.clone())?;
+        let json = key_value_list_to_json(pb.clone());
         let back_again = maybe_key_value_list_to_pb(Some(&json))?;
         let expected: Value = literal!({"snot": "snot"});
         assert_eq!(expected, json);
@@ -420,11 +376,11 @@ mod tests {
             name: "name".into(),
             version: "v0.1.2".into(),
         };
-        let json = maybe_instrumentation_library_to_json(Some(pb.clone()));
-        let back_again = maybe_instrumentation_library_to_pb(Some(&json))?;
+        let json = maybe_instrumentation_library_to_json(pb.clone());
+        let back_again = instrumentation_library_to_pb(&json)?;
         let expected: Value = literal!({"name": "name", "version": "v0.1.2"});
         assert_eq!(expected, json);
-        assert_eq!(Some(pb), back_again);
+        assert_eq!(pb, back_again);
         Ok(())
     }
 }

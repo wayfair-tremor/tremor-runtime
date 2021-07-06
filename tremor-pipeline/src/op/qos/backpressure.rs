@@ -367,8 +367,9 @@ mod test {
         };
 
         // A contraflow that passes the timeout
-        let mut m = Object::new();
-        m.insert("time".into(), 99.0.into());
+        let m = literal!({
+            "time": 99.0
+        });
         let mut op_meta = OpMeta::default();
         op_meta.insert(0, OwnedValue::null());
 

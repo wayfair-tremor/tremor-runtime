@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use super::{KnownKey, Value};
+pub use super::{KnownKey, Object, Value};
 pub use crate::literal;
 pub use crate::value_internal;
 pub use value_trait::{

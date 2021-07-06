@@ -1,0 +1,21 @@
+onramp:
+  - id: in
+    type: file
+    config:
+      source: in.json
+      sleep_on_done: 2000
+      close_on_done: true
+offramp:
+  - id: out
+    type: file
+    config:
+      file: out.log
+
+binding:
+  - id: bind
+    links:
+      "/onramp/in/{i}/out": ["/pipeline/main/{i}/in"]
+      "/pipeline/main/{i}/out": ["/offramp/out/{i}/out"]
+mapping:
+  /binding/bind/01:
+    i: "01"

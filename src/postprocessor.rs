@@ -55,6 +55,7 @@ pub fn lookup(name: &str) -> Result<Box<dyn Postprocessor>> {
         "length-prefixed" => Ok(Box::new(LengthPrefix::default())),
         "gelf-chunking" => Ok(Box::new(Gelf::default())),
         "textual-length-prefix" => Ok(Box::new(TextualLength::default())),
+        "zstd" => Ok(Box::new(Zstd::default())),
         _ => Err(format!("Postprocessor '{}' not found.", name).into()),
     }
 }
@@ -261,6 +262,21 @@ impl Postprocessor for TextualLength {
         res.push(32);
         res.write_all(&data)?;
         Ok(vec![res])
+    }
+}
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct Zstd {}
+impl Postprocessor for Zstd {
+    #[cfg(not(tarpaulin_include))]
+    fn name(&self) -> &str {
+        "zstd"
+    }
+
+    fn process(&mut self, _ingres_ns: u64, _egress_ns: u64, data: &[u8]) -> Result<Vec<Vec<u8>>> {
+        // Value of 0 indicates default level for encode.
+        let compressed = zstd::encode_all(data, 0)?;
+        Ok(vec![compressed])
     }
 }
 

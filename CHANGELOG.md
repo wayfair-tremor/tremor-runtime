@@ -6,6 +6,9 @@
 
 - Experimental ARM support
 - Add `default => {...}` and `default "key" => "value` to patch
+- Add `zstd` pre- and post-processors [#1100](https://github.com/tremor-rs/tremor-runtime/issues/1100)
+- Remove `rental` from `Event` [#1031](https://github.com/tremor-rs/tremor-runtime/issues/1031) [#1037](https://github.com/tremor-rs/tremor-runtime/issues/1037)
+- Put event raw payload into `Arc` to improve cloning perf
 
 ### Fixes
 
@@ -13,6 +16,8 @@
 - Ensure patch keys are strings to move runtime errors into the compiletime
 - Fix issue with the token `"` being presented as a tick in errors
 - Fix `heredoc_start` and `heredoc_end` showing up in error messages instead of `"""`
+- Fix some errors in otel pb <-> json translation
+- Fix windowed queries emitting events with `null` metadata on tick
 
 ## 0.11.4
 

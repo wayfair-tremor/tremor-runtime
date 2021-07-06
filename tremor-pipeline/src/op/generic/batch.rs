@@ -30,7 +30,7 @@ impl ConfigImpl for Config {}
 #[derive(Debug, Clone)]
 pub struct Batch {
     pub config: Config,
-    pub data: LineValue,
+    pub data: EventPayload,
     pub len: usize,
     pub max_delay_ns: Option<u64>,
     pub first_ns: u64,
@@ -43,8 +43,8 @@ pub struct Batch {
     event_id_gen: EventIdGenerator,
 }
 
-pub fn empty() -> LineValue {
-    LineValue::new(vec![], |_| ValueAndMeta::from(Value::array()))
+pub fn empty() -> EventPayload {
+    EventPayload::new(vec![], |_| ValueAndMeta::from(Value::array()))
 }
 
 op!(BatchFactory(uid, node) {

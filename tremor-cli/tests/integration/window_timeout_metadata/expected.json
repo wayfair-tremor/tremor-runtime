@@ -1,0 +1,4 @@
+{"event":{"aggregate":1,"meta":[{"foo":"bar"}],"window":"win","group":[1,"[1]"],"from_group":1,"event_last":"bar","state":null},"meta":{}}
+{"event":{"aggregate":2,"meta":[{"foo":"bar"},{"foo":"bar"}],"window":"win","group":[2,"[2]"],"from_group":2,"event_last":"baz","state":null},"meta":{}}
+{"event":{"aggregate":2,"meta":[{"foo":"bar"},{"foo":"bar"}],"window":"win","group":[3,"[3]"],"from_group":3,"event_last":"booze","state":null},"meta":{}}
+{"event":{"aggregate":1,"meta":[{"foo":"bar"}],"window":"win","group":[4,"[4]"],"from_group":4,"event_last":"booze","state":null},"meta":{}}

@@ -14,8 +14,8 @@
 
 use crate::errors::Result;
 use rand::Rng;
+use simd_json::ValueAccess;
 use tremor_script::Value;
-use tremor_value::StaticNode;
 
 pub(crate) fn random_span_id_bytes(ingest_ns_seed: u64) -> Vec<u8> {
     let mut rng = tremor_common::rand::make_prng(ingest_ns_seed);
@@ -32,17 +32,15 @@ pub(crate) fn random_span_id_string(ingest_ns_seed: u64) -> String {
     span_id
 }
 
-pub(crate) fn random_span_id_array<'event>(ingest_ns_seed: u64) -> Value<'event> {
-    Value::Array(
-        random_span_id_bytes(ingest_ns_seed)
-            .iter()
-            .map(|b| Value::Static(StaticNode::U64(u64::from(*b))))
-            .collect(),
-    )
+pub(crate) fn random_span_id_array(ingest_ns_seed: u64) -> Value<'static> {
+    random_span_id_bytes(ingest_ns_seed)
+        .into_iter()
+        .map(Value::from)
+        .collect()
 }
 
-pub(crate) fn random_span_id_value<'event>(ingest_ns_seed: u64) -> Value<'event> {
-    Value::String(random_span_id_string(ingest_ns_seed).into())
+pub(crate) fn random_span_id_value(ingest_ns_seed: u64) -> Value<'static> {
+    Value::from(random_span_id_string(ingest_ns_seed))
 }
 
 pub(crate) fn random_trace_id_bytes(ingest_ns_seed: u64) -> Vec<u8> {
@@ -60,32 +58,15 @@ pub(crate) fn random_trace_id_string(ingest_ns_seed: u64) -> String {
     span_id
 }
 
-pub(crate) fn random_trace_id_value<'event>(ingest_ns_seed: u64) -> Value<'event> {
-    Value::String(random_trace_id_string(ingest_ns_seed).into())
+pub(crate) fn random_trace_id_value(ingest_ns_seed: u64) -> Value<'static> {
+    Value::from(random_trace_id_string(ingest_ns_seed))
 }
 
-fn hex_to_bytes(str_bytes: &str) -> Option<Vec<u8>> {
-    if str_bytes.len() % 2 == 0 {
-        (0..str_bytes.len())
-            .step_by(2)
-            .map(|i| {
-                str_bytes
-                    .get(i..i + 2)
-                    .and_then(|sub| u8::from_str_radix(sub, 16).ok())
-            })
-            .collect()
-    } else {
-        None
-    }
-}
-
-pub(crate) fn random_trace_id_array<'event>(ingest_ns_seed: u64) -> Value<'event> {
-    Value::Array(
-        random_trace_id_bytes(ingest_ns_seed)
-            .iter()
-            .map(|b| Value::Static(StaticNode::U64(u64::from(*b))))
-            .collect(),
-    )
+pub(crate) fn random_trace_id_array(ingest_ns_seed: u64) -> Value<'static> {
+    random_trace_id_bytes(ingest_ns_seed)
+        .into_iter()
+        .map(Value::from)
+        .collect()
 }
 
 pub(crate) fn hex_parent_span_id_to_pb(data: Option<&Value<'_>>) -> Result<Vec<u8>> {
@@ -96,18 +77,18 @@ pub(crate) fn hex_span_id_to_pb(data: Option<&Value<'_>>) -> Result<Vec<u8>> {
     hex_id_to_pb("span", data, 8, false)
 }
 
-pub(crate) fn hex_span_id_to_json<'event>(data: &[u8]) -> Value<'event> {
+pub(crate) fn hex_span_id_to_json(data: &[u8]) -> Value<'static> {
     let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
-    Value::String(hex.into())
+    Value::from(hex)
 }
 
 pub(crate) fn hex_trace_id_to_pb(data: Option<&Value<'_>>) -> Result<Vec<u8>> {
     hex_id_to_pb("trace", data, 16, false)
 }
 
-pub(crate) fn hex_trace_id_to_json<'event>(data: &[u8]) -> Value<'event> {
+pub(crate) fn hex_trace_id_to_json(data: &[u8]) -> Value<'static> {
     let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
-    Value::String(hex.into())
+    Value::from(hex)
 }
 
 fn hex_id_to_pb(
@@ -116,75 +97,26 @@ fn hex_id_to_pb(
     len_bytes: usize,
     allow_empty: bool,
 ) -> Result<Vec<u8>> {
-    if let Some(Value::String(json)) = data {
-        let pb = json.to_string();
-        let pb = hex_to_bytes(&pb);
-
-        if let Some(pb) = pb {
-            if (allow_empty && pb.is_empty()) || pb.len() == len_bytes {
-                Ok(pb)
-            } else {
-                Err(format!(
-                    "Invalid {} id ( wrong string length 1) - cannot convert to pb",
-                    kind
-                )
-                .into())
-            }
-        } else {
-            Err(format!("Invalid hex encoded string - cannot convert {} to pb", kind).into())
-        }
-    } else if let Some(Value::Bytes(json)) = data {
-        let data = json.to_vec();
-        if (allow_empty && data.is_empty()) || data.len() == len_bytes {
-            Ok(data)
-        } else {
-            Err(format!(
-                "Invalid {} id ( wrong byte length ) - cannot convert to pb",
-                kind
-            )
-            .into())
-        }
-    } else if let Some(Value::Array(arr)) = data {
-        let mut data = Vec::with_capacity(arr.len());
-        for i in arr {
-            if let Value::Static(StaticNode::I64(i)) = i {
-                if *i > 255 {
-                    return Err(format!(
-                        "Invalid {} id ( wrong array element ) - values must be 0 <= [..., v={} , ...] <= 255 - cannot convert to pb",
-                        kind,
-                        *i
-                    )
-                    .into());
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                #[allow(clippy::cast_sign_loss)]
-                data.push(*i as u8)
-            } else if let Value::Static(StaticNode::U64(i)) = i {
-                if *i > 255 {
-                    return Err(format!(
-                        "Invalid {} id ( wrong array element ) - values must be 0 <= [..., v={} , ...] <= 255 - cannot convert to pb",
-                        kind,
-                        *i
-                    )
-                    .into());
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                #[allow(clippy::cast_sign_loss)]
-                data.push(*i as u8)
-            }
-        }
-
-        if (allow_empty && data.is_empty()) || data.len() == len_bytes {
-            Ok(data)
-        } else {
-            Err(format!(
-                "Invalid {} id ( wrong array length ) - cannot convert to pb",
-                kind
-            )
-            .into())
-        }
+    let data = if let Some(s) = data.as_str() {
+        hex::decode(s)?
+    } else if let Some(json) = data.and_then(Value::as_bytes) {
+        json.to_vec()
+    } else if let Some(arr) = data.as_array() {
+        arr.iter().map(Value::as_u8).collect::<Option<Vec<u8>>>().ok_or_else(|| format!(
+            "Invalid {} id ( wrong array element ) - values must be between 0 and 255 - cannot convert to pb",
+            kind
+        ))?
     } else {
-        Err(format!("Cannot convert json value to otel pb {} id", kind).into())
+        return Err(format!("Cannot convert json value to otel pb {} id", kind).into());
+    };
+    if (allow_empty && data.is_empty()) || data.len() == len_bytes {
+        Ok(data)
+    } else {
+        Err(format!(
+            "Invalid {} id ( wrong array length ) - cannot convert to pb",
+            kind
+        )
+        .into())
     }
 }
 
@@ -246,11 +178,6 @@ pub mod test {
         Ok(())
     }
 
-    #[test]
-    fn bad_hex() {
-        assert!(hex_to_bytes("snot").is_none());
-    }
-
     proptest! {
 
         #[test]
@@ -258,7 +185,7 @@ pub mod test {
             arb_hexen in prop::collection::vec("[a-f0-9]{16}", 16..=16)
         ) {
             for expected in arb_hexen {
-                let bytes = hex_to_bytes(&expected).unwrap();
+                let bytes = hex::decode(&expected).unwrap();
 
                 let json = Value::Bytes(bytes.clone().into());
                 let pb = hex_span_id_to_pb(Some(&json))?;
@@ -271,7 +198,7 @@ pub mod test {
             arb_hexen in prop::collection::vec("[a-f0-9]{32}", 32..=32)
         ) {
             for expected in arb_hexen {
-                let bytes = hex_to_bytes(&expected).unwrap();
+                let bytes = hex::decode(&expected).unwrap();
 
                 let json = Value::Bytes(bytes.clone().into());
                 let pb = hex_trace_id_to_pb(Some(&json))?;
