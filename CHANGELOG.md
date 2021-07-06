@@ -9,7 +9,7 @@
 - Add `zstd` pre- and post-processors [#1100](https://github.com/tremor-rs/tremor-runtime/issues/1100)
 - Remove `rental` from `Event` [#1031](https://github.com/tremor-rs/tremor-runtime/issues/1031) [#1037](https://github.com/tremor-rs/tremor-runtime/issues/1037)
 - Put event raw payload into `Arc` to improve cloning perf
-
+- Allow gcp headers to be included in `rest` offramp with `auth: gcp`
 ### Fixes
 
 - Skip instead of fail EQC on out of repo PRs
