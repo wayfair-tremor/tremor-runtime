@@ -15,8 +15,8 @@
 #![cfg(not(tarpaulin_include))]
 
 use crate::codec::Codec;
+use crate::connectors::gcp::auth;
 use crate::errors::ErrorKind;
-use crate::connectors::gcp::{auth};
 use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
 use futures::executor::block_on;
@@ -459,7 +459,9 @@ impl Sink for Rest {
         let mut config_headers = self.config.headers.clone();
         // this could be a match case if other sink auth types are introduced
         // for now clippy doesn't like equality checks disguised as match cases.
-        if self.config.auth.as_str() == "gcp" { config_headers = block_on(auth::merge_gcp_headers(&config_headers))? }
+        if self.config.auth.as_str() == "gcp" {
+            config_headers = block_on(auth::merge_gcp_headers(&config_headers))?
+        }
         let cloned_sink_url = sink_url.clone();
         self.sink_url = sink_url.clone();
 

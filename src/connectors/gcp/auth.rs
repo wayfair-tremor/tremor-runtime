@@ -18,46 +18,43 @@ use crate::errors::Result;
 /// in the file. The provided PEM file should be a current non-revoked and complete copy of the
 /// required certificate chain for the Google Cloud Platform.
 use gouth::Token;
+use halfbrown::HashMap;
 use reqwest::header::HeaderMap;
 use reqwest::Client;
-use halfbrown::HashMap;
 
 pub(crate) async fn authenticate_bearer() -> Result<String> {
     Ok(Token::new()?.header_value()?.to_string())
 }
 
 pub(crate) async fn json_api_client(extra_headers: &HeaderMap) -> Result<Client> {
-  let bearer = authenticate_bearer().await?;
-  let mut headers = reqwest::header::HeaderMap::new();
-  headers.insert(
-      "authorization",
-      reqwest::header::HeaderValue::from_maybe_shared(bearer)?,
-  );
-  headers.insert(
-      "content-type",
-      reqwest::header::HeaderValue::from_static("application/json"),
-  );
-  for header in extra_headers {
-      headers.append(header.0, header.1.clone());
-  }  
-  Ok(reqwest::Client::builder()
+    let bearer = authenticate_bearer().await?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "authorization",
+        reqwest::header::HeaderValue::from_maybe_shared(bearer)?,
+    );
+    headers.insert(
+        "content-type",
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    for header in extra_headers {
+        headers.append(header.0, header.1.clone());
+    }
+    Ok(reqwest::Client::builder()
         .default_headers(headers)
         .build()?)
 }
 
-pub(crate) async fn merge_gcp_headers(extra_headers: &HashMap<String,String>) -> Result<HashMap<String, String>> {
-  let bearer = authenticate_bearer().await?;
-  let mut headers: HashMap<String,String> = halfbrown::HashMap::new();
-  headers.insert(
-      "authorization".to_string(),
-      bearer,
-  );
-  headers.insert(
-      "content-type".to_string(),
-      "application/json".to_string(),
-  );
-  for header in extra_headers { // should be a small list so clone em all, I say.
-      headers.insert(header.0.clone().to_string(), header.1.clone().to_string());
-  }
-  Ok(headers)
+pub(crate) async fn merge_gcp_headers(
+    extra_headers: &HashMap<String, String>,
+) -> Result<HashMap<String, String>> {
+    let bearer = authenticate_bearer().await?;
+    let mut headers: HashMap<String, String> = halfbrown::HashMap::new();
+    headers.insert("authorization".to_string(), bearer);
+    headers.insert("content-type".to_string(), "application/json".to_string());
+    for header in extra_headers {
+        // should be a small list so clone em all, I say.
+        headers.insert(header.0.clone().to_string(), header.1.clone().to_string());
+    }
+    Ok(headers)
 }
