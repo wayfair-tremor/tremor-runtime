@@ -1,0 +1,52 @@
+name: Benchmark
+
+on: [push, pull_request]
+
+jobs:
+  tests-linux:
+    runs-on: ubuntu-latest # TODO: change this to tremor-bench-dev
+
+    env:
+      TREMOR_PATH: "${{ github.workspace }}/tremor-script/lib"
+
+    steps:
+
+      - name: clone repository
+        uses: actions/checkout@v2
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+
+      - name: install deps
+        run: sudo apt-get -qy update && sudo apt-get install -y libssl-dev libssl1.1
+
+      - name: build release
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release -p tremor-cli 
+
+      - name: run benchmarks
+        run: |
+          ./target/release/tremor test bench tremor-cli/tests/bench/ -o
+
+      - name: post benchmark results
+        env:
+          TREMORBOT_TOKEN: ${{ secrets.TREMORBOT_TOKEN }}
+        run: |
+          git clone --depth 1 -b data https://${TREMORBOT_TOKEN}@github.com/humancalico/tremor-benchmark.git data
+          cd data
+          curl -o tremor-bench.zip -L https://github.com/humancalico/tremor-benchmark/releases/download/v0.1.1/tremor-benchmark-x86_64-unknown-linux-musl.zip
+          unzip tremor-bench.zip
+          ./tremor-benchmark data.json recent.json ../report.json $GITHUB_SHA
+          git config user.email "humancalico+tremorbot@disroot.org" # need a different email pls
+          git config user.name "tremorbot"
+          git add data.json recent.json
+          git commit --message "chore: update benchmarks"
+          git push origin data
