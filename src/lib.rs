@@ -41,6 +41,9 @@ extern crate rental;
 #[macro_use]
 extern crate pretty_assertions;
 
+#[cfg(test)]
+extern crate test_case;
+
 #[macro_use]
 pub(crate) mod macros;
 pub(crate) mod async_sink;

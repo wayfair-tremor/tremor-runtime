@@ -94,7 +94,7 @@ impl Manager {
                 match msg {
                     ManagerMsg::CreatePipeline(r, c) => {
                         self.pipeline
-                            .send(pipeline::ManagerMsg::Create(r, c))
+                            .send(pipeline::ManagerMsg::Create(r, Box::new(c)))
                             .await?
                     }
                     ManagerMsg::CreateOnramp(r, c) => {

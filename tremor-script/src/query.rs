@@ -15,73 +15,17 @@
 use crate::ast::{self, Warning};
 use crate::errors::{CompilerError, Error, Result};
 use crate::highlighter::{Dumb as DumbHighlighter, Highlighter};
-use crate::lexer;
 use crate::path::ModulePath;
 use crate::prelude::*;
-use rental::rental;
+use crate::{lexer, srs};
+use std::collections::BTreeSet;
 use std::io::Write;
-use std::sync::Arc;
-use std::{boxed::Box, collections::BTreeSet};
-
-/// Rental wrapper
-#[derive(Debug, PartialEq, PartialOrd, Eq, Clone)]
-pub struct StmtRentalWrapper {
-    /// Statement
-    pub stmt: Arc<rentals::Stmt>,
-}
-impl StmtRentalWrapper {
-    /// Gets the wrapped statement
-    #[must_use]
-    pub fn suffix(&self) -> &ast::Stmt {
-        self.stmt.suffix()
-    }
-}
-
-rental! {
-    mod rentals {
-        use crate::ast;
-        use std::borrow::Cow;
-        use serde::Serialize;
-        use std::sync::Arc;
-
-        /// rental around Query
-        #[rental_mut(covariant,debug)]
-        pub struct Query {
-            script: Box<String>,
-            query: ast::Query<'script>,
-        }
-
-        /// rental around Stmt
-        #[rental(covariant,debug)]
-        pub struct Stmt {
-            query: Arc<super::Query>,
-            stmt: ast::Stmt<'query>,
-        }
-    }
-}
-
-pub use rentals::Query as QueryRental;
-pub use rentals::Stmt as StmtRental;
-
-impl PartialEq for rentals::Stmt {
-    fn eq(&self, other: &Self) -> bool {
-        self.suffix() == other.suffix()
-    }
-}
-
-impl Eq for rentals::Stmt {}
-
-impl PartialOrd for rentals::Stmt {
-    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
-        None // NOTE Here be dragons
-    }
-}
 
 /// A tremor query
 #[derive(Debug, Clone)]
 pub struct Query {
     /// The query
-    pub query: Arc<QueryRental>,
+    pub query: srs::Query,
     /// Source of the query
     pub source: String,
     /// Warnings emitted by the script
@@ -95,6 +39,11 @@ where
     'script: 'event,
     'event: 'run,
 {
+    /// Extracts SRS  statements
+    #[must_use]
+    pub fn extract_stmts(&self) -> Vec<srs::Stmt> {
+        self.query.extract_stmts()
+    }
     /// Borrows the query
     #[must_use]
     pub fn suffix(&self) -> &ast::Query {
@@ -123,7 +72,7 @@ where
         let mut include_stack = lexer::IncludeStack::default();
 
         let r = |include_stack: &mut lexer::IncludeStack| -> Result<Self> {
-            let query = rentals::Query::try_new(Box::new(source.clone()), |src: &mut String| {
+            let query = srs::Query::try_new::<Error, _>(source.clone(), |src: &mut String| {
                 let mut helper = ast::Helper::new(reg, aggr_reg, cus);
                 let cu = include_stack.push(&file_name)?;
                 let lexemes: Vec<_> = lexer::Preprocessor::preprocess(
@@ -146,10 +95,10 @@ where
             })?;
 
             Ok(Self {
-                query: Arc::new(query),
+                query,
                 source,
-                locals,
                 warnings,
+                locals,
             })
         }(&mut include_stack);
         r.map_err(|error| CompilerError {

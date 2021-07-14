@@ -59,6 +59,21 @@ pub enum Stmt<'script> {
     Select(SelectStmt<'script>),
 }
 
+#[cfg(not(tarpaulin_include))] // this is a simple passthrough
+impl<'script> BaseExpr for Stmt<'script> {
+    fn mid(&self) -> usize {
+        match self {
+            Stmt::WindowDecl(s) => s.mid(),
+            Stmt::Stream(s) => s.mid(),
+            Stmt::OperatorDecl(s) => s.mid(),
+            Stmt::ScriptDecl(s) => s.mid(),
+            Stmt::Operator(s) => s.mid(),
+            Stmt::Script(s) => s.mid(),
+            Stmt::Select(s) => s.mid(),
+        }
+    }
+}
+
 /// array of aggregate functions
 pub type Aggregates<'a> = Vec<InvokeAggrFn<'a>>;
 
@@ -99,6 +114,12 @@ pub struct SelectStmt<'script> {
     pub locals: usize,
     /// Node metadata nodes
     pub node_meta: NodeMetas,
+}
+#[cfg(not(tarpaulin_include))] // this is a simple passthrough
+impl<'script> BaseExpr for SelectStmt<'script> {
+    fn mid(&self) -> usize {
+        self.stmt.mid()
+    }
 }
 
 /// The type of a select statement

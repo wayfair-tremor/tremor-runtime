@@ -204,7 +204,7 @@ pub struct Create {
 
 pub(crate) enum ManagerMsg {
     Stop,
-    Create(async_channel::Sender<Result<Addr>>, Create),
+    Create(async_channel::Sender<Result<Addr>>, Box<Create>),
 }
 
 #[derive(Default, Debug)]
@@ -552,7 +552,7 @@ impl Manager {
                         break;
                     }
                     Ok(ManagerMsg::Create(r, create)) => {
-                        r.send(self.start_pipeline(create)).await?
+                        r.send(self.start_pipeline(*create)).await?
                     }
                     Err(e) => {
                         info!("Stopping Pipeline manager... {}", e);
@@ -668,7 +668,7 @@ mod tests {
 
         let (tx, rx) = async_channel::bounded(1);
         let create = Create { config, id };
-        let create_msg = ManagerMsg::Create(tx, create);
+        let create_msg = ManagerMsg::Create(tx, Box::new(create));
         sender.send(create_msg).await?;
         let addr = rx.recv().await??;
 
@@ -810,7 +810,7 @@ mod tests {
         let (handle, sender) = manager.start();
         let (tx, rx) = async_channel::bounded(1);
         let create = Create { config, id };
-        let create_msg = ManagerMsg::Create(tx, create);
+        let create_msg = ManagerMsg::Create(tx, Box::new(create));
         sender.send(create_msg).await?;
         let addr = rx.recv().await??;
         let (offramp_tx, offramp_rx) = async_channel::unbounded();

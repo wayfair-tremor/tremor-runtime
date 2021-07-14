@@ -49,8 +49,6 @@ pub mod highlighter;
 pub mod interpreter;
 /// The Tremor Script Lexer
 pub mod lexer;
-// We need this because of lalrpop
-mod event_payload;
 #[allow(unused)]
 pub(crate) mod parser;
 /// Support for module paths
@@ -65,22 +63,22 @@ pub mod query;
 pub mod registry;
 /// Tremor Script
 pub mod script;
+/// Self referential structs
+pub mod srs;
 mod std_lib;
 mod tilde;
 /// Utility functions
 pub mod utils;
 
-pub use event_payload::{EventPayload, ValueAndMeta};
+pub use srs::{EventPayload, ValueAndMeta};
 
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-#[macro_use]
-extern crate rental;
 
 pub use crate::ast::query::SelectType;
 pub use crate::ctx::{EventContext, EventOriginUri};
-pub use crate::query::{Query, QueryRental};
+pub use crate::query::Query;
 pub use crate::registry::{
     aggr as aggr_registry, registry, Aggr as AggrRegistry, CustomFn, Registry, TremorAggrFn,
     TremorAggrFnWrapper, TremorFn, TremorFnWrapper,

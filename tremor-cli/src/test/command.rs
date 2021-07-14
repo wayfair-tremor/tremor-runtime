@@ -128,11 +128,11 @@ pub(crate) fn suite_command(
                     let args = shell_words::split(&case.command).unwrap_or_default();
 
                     if let Some((cmd, args)) = args.split_first() {
-                        let resolved_cmd = job::which(&cmd)?;
+                        let resolved_cmd = job::which(cmd)?;
 
                         // TODO wintel
                         let mut fg_process =
-                            job::TargetProcess::new_with_stderr(&resolved_cmd, &args, &case.env)?;
+                            job::TargetProcess::new_with_stderr(resolved_cmd, &args, &case.env)?;
                         let exit_status = fg_process.wait_with_output();
 
                         let fg_out_file = suite_root.join(&format!("fg.{}.out.log", counter));

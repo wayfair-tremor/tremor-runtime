@@ -14,16 +14,15 @@
 
 use crate::op::prelude::*;
 use beef::Cow;
-use tremor_script::prelude::*;
+use tremor_script::{ast, prelude::*, srs};
 #[derive(Debug)]
 pub(crate) struct TrickleOperator {
     pub id: String,
-    pub stmt: tremor_script::query::StmtRentalWrapper,
     pub op: Box<dyn Operator>,
 }
 
 fn mk_node_config(
-    id: Cow<'static, str>,
+    id: String,
     op_type: String,
     config: Option<HashMap<String, Value>>,
 ) -> NodeConfig {
@@ -49,19 +48,16 @@ fn mk_node_config(
 }
 
 impl TrickleOperator {
-    pub fn with_stmt(
-        operator_uid: u64,
-        id: String,
-        stmt_rentwrapped: tremor_script::query::StmtRentalWrapper,
-    ) -> Result<Self> {
+    pub fn with_stmt(operator_uid: u64, id: String, decl: &srs::Stmt) -> Result<Self> {
         use crate::operator;
-        let stmt = stmt_rentwrapped.suffix();
+        let stmt = decl.suffix();
         let op: Box<dyn Operator> = match stmt {
-            tremor_script::ast::Stmt::OperatorDecl(ref op) => {
+            ast::Stmt::OperatorDecl(ref op) => {
+                let op = op.clone().into_static();
                 let config = mk_node_config(
-                    op.id.clone().into(),
+                    op.id,
                     format!("{}::{}", op.kind.module, op.kind.operation),
-                    op.params.clone(),
+                    op.params,
                 );
                 operator(operator_uid, &config)?
             }
@@ -73,11 +69,7 @@ impl TrickleOperator {
             }
         };
 
-        Ok(Self {
-            id,
-            stmt: stmt_rentwrapped,
-            op,
-        })
+        Ok(Self { id, op })
     }
 }
 

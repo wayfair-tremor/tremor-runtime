@@ -94,7 +94,7 @@ impl<'script> ScriptRaw<'script> {
                             mid: helper.add_meta_w_name(start, end, &name),
                         }))
                     }
-                    helper.add_const_doc(name, comment, value_type);
+                    helper.add_const_doc(&name, comment, value_type);
                 }
                 ExprRaw::FnDecl(f) => {
                     helper.docs.fns.push(f.doc());
@@ -748,10 +748,10 @@ pub struct FnDeclRaw<'script> {
 impl_expr!(FnDeclRaw);
 
 impl<'script> FnDeclRaw<'script> {
-    pub(crate) fn doc(&self) -> FnDoc<'script> {
+    pub(crate) fn doc(&self) -> FnDoc {
         FnDoc {
-            name: self.name.id.clone(),
-            args: self.args.iter().map(|a| a.id.clone()).collect(),
+            name: self.name.id.to_string(),
+            args: self.args.iter().map(|a| a.id.to_string()).collect(),
             open: self.open,
             doc: self
                 .doc
@@ -805,7 +805,7 @@ pub enum AnyFnRaw<'script> {
     Normal(FnDeclRaw<'script>),
 }
 impl<'script> AnyFnRaw<'script> {
-    pub(crate) fn doc(&self) -> FnDoc<'script> {
+    pub(crate) fn doc(&self) -> FnDoc {
         match self {
             AnyFnRaw::Match(f) => f.doc(),
             AnyFnRaw::Normal(f) => f.doc(),
@@ -857,10 +857,10 @@ pub struct MatchFnDeclRaw<'script> {
 impl_expr!(MatchFnDeclRaw);
 
 impl<'script> MatchFnDeclRaw<'script> {
-    pub(crate) fn doc(&self) -> FnDoc<'script> {
+    pub(crate) fn doc(&self) -> FnDoc {
         FnDoc {
-            name: self.name.id.clone(),
-            args: self.args.iter().map(|a| a.id.clone()).collect(),
+            name: self.name.id.to_string(),
+            args: self.args.iter().map(|a| a.id.to_string()).collect(),
             open: self.open,
             doc: self
                 .doc

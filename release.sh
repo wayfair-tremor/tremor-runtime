@@ -9,7 +9,7 @@ tremor-cli/Cargo.toml \
 tremor-common/Cargo.toml \
 tremor-influx/Cargo.toml \
 tremor-pipeline/Cargo.toml \
-tremor-script/Cargo.toml\
+tremor-script/Cargo.toml \
 tremor-value/Cargo.toml
 "
 VERSION_TESTS="\
@@ -97,7 +97,7 @@ read -r answer
 case "${answer}" in
     C*|c*)
         git checkout -b "release-v${new}"
-        git commit -sa -m "Rlease v${new}"
+        git commit -sa -m "Release v${new}"
         git push --set-upstream origin "release-v${new}"
         ;;
     *)
@@ -149,7 +149,7 @@ read -r answer
 case "${answer}" in
     C*|c*)
         git checkout -b "release-v${new}"
-        git commit -sa -m "Rlease v${new}"
+        git commit -sa -m "Release v${new}"
         git push --set-upstream origin "release-v${new}"
         ;;
     *)
@@ -214,7 +214,7 @@ read -r answer
 case "${answer}" in
     C*|c*)
         git checkout -b "release-v${new}"
-        git commit -sa -m "Rlease v${new}"
+        git commit -sa -m "Release v${new}"
         git push --set-upstream origin "release-v${new}"
         ;;
     *)

@@ -21,8 +21,8 @@ pretty_assertions = "0.7.2"
 
 [dependencies]
 anyhow = "1"
-async-std = {version = "1.9", features = ["unstable"]}
-clap = {version = "3.0.0-beta.2", features = ["yaml", "color"]}
+async-std = { version="1.9", features=["unstable"] }
+clap = { version="3.0.0-beta.2", features=["yaml", "color"] }
 clap_generate = "3.0.0-beta.2"
 difference = "2"
 dirs-next = "2"
@@ -35,31 +35,30 @@ log4rs = "1.0.0"
 serde = "1"
 serde_derive = "1"
 serde_yaml = "0.8"
-simd-json = {version = "0.4", features = ["known-key"]}
+simd-json = { version="0.4", features=["known-key"] }
 # we need to stick with 0.2.26 as it includes its own libc
 # which allows us to build on older systems like centos 7
 # issues to track until we can loosen those restrictions:
 #   - https://github.com/microsoft/snmalloc/issues/328
 #   - https://github.com/SchrodingerZhu/snmalloc-rs/issues/145
-snmalloc-rs = {version = "=0.2.26", optional = false}
-snmalloc-sys = {version = "=0.2.26", optional = false}
+snmalloc-rs = { version="=0.2.26", optional=false }
+snmalloc-sys = { version="=0.2.26", optional=false }
 surf = "=2.2.0"
 tide = "0.16"
-tremor-api = {path = "../tremor-api"}
-tremor-common = {path = "../tremor-common"}
-tremor-pipeline = {path = "../tremor-pipeline"}
-tremor-runtime = {path = "../"}
-tremor-script = {path = "../tremor-script"}
+tremor-api = { path="../tremor-api" }
+tremor-common = { path="../tremor-common" }
+tremor-pipeline = { path="../tremor-pipeline" }
+tremor-runtime = { path="../" }
+tremor-script = { path="../tremor-script" }
 url = "2"
 # mimalloc-rs = { version = "0.1", default-features = true, optional = true }
 # allocator_api = "0.6.0"
 error-chain = "0.12"
 globwalk = "0.8"
 port_scanner = "0.1"
-rental = "0.5"
 serde_json = "1.0"
 shell-words = "1.0"
-tch = {version = "*", optional = true}
+tch = { version="*", optional=true }
 termcolor = "1.1"
 [[bin]]
 name = "tremor"

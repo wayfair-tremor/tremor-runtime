@@ -41,7 +41,7 @@ if let Some(map) = &node.config {
 #[derive(Debug, Clone)]
 pub struct History {
     pub config: Config,
-    pub id: Cow<'static, str>,
+    pub id: String,
 }
 
 impl Operator for History {

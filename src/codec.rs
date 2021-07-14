@@ -109,7 +109,7 @@ pub fn lookup(name: &str) -> Result<Box<dyn Codec>> {
         "statsd" => Ok(Box::new(statsd::StatsD {})),
         "yaml" => Ok(Box::new(yaml::Yaml {})),
         "binary" => Ok(Box::new(binary::Binary {})),
-        "syslog" => Ok(Box::new(syslog::Syslog {})),
+        "syslog" => Ok(Box::new(syslog::Syslog::utcnow())),
         _ => Err(format!("Codec '{}' not found.", name).into()),
     }
 }

@@ -32,8 +32,6 @@ extern crate serde;
 #[macro_use]
 extern crate log;
 
-extern crate rental;
-
 use crate::errors::{Error, Result};
 use crate::util::{load_config, FormatKind, TremorApp};
 use async_std::task;

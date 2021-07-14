@@ -15,7 +15,7 @@
 // [x] PERF0001: handle select without grouping or windows easier.
 
 use crate::{
-    errors::{Error, ErrorKind, Result},
+    errors::{Error, Result},
     EventId, SignalKind,
 };
 use crate::{op::prelude::*, EventIdGenerator};
@@ -23,31 +23,28 @@ use crate::{Event, Operator};
 use halfbrown::{HashMap, RawEntryMut};
 use std::borrow::Cow as SCow;
 use std::mem;
-use std::sync::Arc;
 use tremor_common::stry;
-
 use tremor_script::{
     self,
-    ast::{Aggregates, Consts, InvokeAggrFn, NodeMetas, Select, SelectStmt, WindowDecl},
+    ast::{Aggregates, InvokeAggrFn, NodeMetas, Select, SelectStmt, WindowDecl},
     interpreter::Env,
     interpreter::LocalStack,
     prelude::*,
-    query::StmtRental,
-    query::StmtRentalWrapper,
+    srs,
     utils::sorted_serialize,
-    QueryRental, Value,
+    Value,
 };
 
 #[derive(Debug, Clone)]
-pub struct GroupData<'groups> {
+pub struct GroupData {
     group: Value<'static>,
     window: WindowImpl,
-    aggrs: Aggregates<'groups>,
+    aggrs: Aggregates<'static>,
     id: EventId,
     transactional: bool,
 }
 
-impl<'groups> GroupData<'groups> {
+impl GroupData {
     fn track_transactional(&mut self, transactional: bool) {
         self.transactional = self.transactional || transactional;
     }
@@ -60,53 +57,24 @@ impl<'groups> GroupData<'groups> {
     }
 }
 
-type Groups<'groups> = HashMap<String, GroupData<'groups>>;
-rental! {
-    pub mod rentals {
-        use std::sync::Arc;
-        use halfbrown::HashMap;
-        use super::*;
-
-        #[rental(covariant, debug)]
-        pub struct Select {
-            stmt: Arc<StmtRental>,
-            select: tremor_script::ast::SelectStmt<'stmt>,
-        }
-        #[rental(covariant, debug, clone)]
-        pub struct Window {
-            stmt: Arc<tremor_script::QueryRental>,
-            window: WindowDecl<'stmt>,
-        }
-    }
-}
-
-/// Select dimensions
-#[derive(Debug, Clone)]
-pub struct Dims {
-    query: Arc<StmtRental>,
-    groups: Groups<'static>,
-}
-
-impl Dims {
-    pub fn new(query: Arc<StmtRental>) -> Self {
-        Self {
-            query,
-            groups: HashMap::new(),
-        }
-    }
-}
+pub(crate) type Groups = HashMap<String, GroupData>;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub struct TrickleSelect {
     pub id: String,
-    pub select: rentals::Select,
+    pub(crate) select: srs::Select,
     pub windows: Vec<Window>,
     pub event_id_gen: EventIdGenerator,
 }
 
 pub trait WindowTrait: std::fmt::Debug {
-    fn on_event(&mut self, event: &Event) -> Result<WindowEvent>;
+    fn on_event(
+        &mut self,
+        data: &ValueAndMeta,
+        ingest_ns: u64,
+        origin_uri: &Option<EventOriginUri>,
+    ) -> Result<WindowEvent>;
     /// handle a tick with the current time in nanoseconds as `ns` argument
     fn on_tick(&mut self, _ns: u64) -> Result<WindowEvent> {
         Ok(WindowEvent::all_false())
@@ -124,8 +92,8 @@ pub struct Window {
     window_impl: WindowImpl,
     module: Vec<String>,
     name: String,
-    dims: Dims,
-    last_dims: Dims,
+    dims: Groups,
+    last_dims: Groups,
     next_swap: u64,
 }
 
@@ -159,10 +127,15 @@ impl WindowImpl {
 }
 
 impl WindowTrait for WindowImpl {
-    fn on_event(&mut self, event: &Event) -> Result<WindowEvent> {
+    fn on_event(
+        &mut self,
+        data: &ValueAndMeta,
+        ingest_ns: u64,
+        origin_uri: &Option<EventOriginUri>,
+    ) -> Result<WindowEvent> {
         match self {
-            Self::TumblingTimeBased(w) => w.on_event(event),
-            Self::TumblingCountBased(w) => w.on_event(event),
+            Self::TumblingTimeBased(w) => w.on_event(data, ingest_ns, origin_uri),
+            Self::TumblingCountBased(w) => w.on_event(data, ingest_ns, origin_uri),
         }
     }
 
@@ -230,7 +203,12 @@ impl WindowTrait for NoWindow {
     fn eviction_ns(&self) -> Option<u64> {
         None
     }
-    fn on_event(&mut self, _event: &Event) -> Result<WindowEvent> {
+    fn on_event(
+        &mut self,
+        _data: &ValueAndMeta,
+        _ingest_ns: u64,
+        _origin_uri: &Option<EventOriginUri>,
+    ) -> Result<WindowEvent> {
         self.open = true;
         Ok(WindowEvent::all_true())
     }
@@ -247,7 +225,7 @@ pub struct TumblingWindowOnTime {
     events: u64,
     interval: u64,
     ttl: Option<u64>,
-    script: Option<rentals::Window>,
+    script: Option<WindowDecl<'static>>,
 }
 impl TumblingWindowOnTime {
     pub fn from_stmt(
@@ -256,19 +234,9 @@ impl TumblingWindowOnTime {
         max_groups: u64,
         ttl: Option<u64>,
         script: Option<&WindowDecl>,
-        qry: &Arc<QueryRental>,
-    ) -> Result<Self> {
-        let script = script
-            .map(|s| {
-                rentals::Window::try_new(qry.clone(), |stmt| -> Result<_> {
-                    let id = &s.id;
-                    let windows = &stmt.suffix().windows;
-                    let window = windows.get(id).cloned();
-                    window.ok_or_else(|| format!("unknown window: {}", &s.id).into())
-                })
-            })
-            .transpose()?;
-        Ok(Self {
+    ) -> Self {
+        let script = script.cloned().map(WindowDecl::into_static);
+        Self {
             next_window: None,
             emit_empty_windows,
             max_groups,
@@ -276,7 +244,7 @@ impl TumblingWindowOnTime {
             interval,
             ttl,
             script,
-        })
+        }
     }
 
     fn get_window_event(&mut self, time: u64) -> WindowEvent {
@@ -311,16 +279,21 @@ impl WindowTrait for TumblingWindowOnTime {
     fn max_groups(&self) -> u64 {
         self.max_groups
     }
-    fn on_event(&mut self, event: &Event) -> Result<WindowEvent> {
+    fn on_event(
+        &mut self,
+        data: &ValueAndMeta,
+        ingest_ns: u64,
+        origin_uri: &Option<EventOriginUri>,
+    ) -> Result<WindowEvent> {
         self.events += 1; // count events to check if we should emit, as we avoid to emit if we have no events
         let time = self
             .script
             .as_ref()
-            .and_then(|script| script.suffix().script.as_ref())
+            .and_then(|script| script.script.as_ref())
             .map(|script| {
                 // TODO avoid origin_uri clone here
-                let context = EventContext::new(event.ingest_ns, event.origin_uri.clone());
-                let (unwind_event, event_meta) = event.data.parts();
+                let context = EventContext::new(ingest_ns, origin_uri.clone());
+                let (unwind_event, event_meta) = data.parts();
                 let value = script.run_imut(
                     &context,
                     AggrType::Emit,
@@ -335,7 +308,7 @@ impl WindowTrait for TumblingWindowOnTime {
                 };
                 data.ok_or_else(|| Error::from("Data based window didn't provide a valid value"))
             })
-            .unwrap_or(Ok(event.ingest_ns))?;
+            .unwrap_or(Ok(ingest_ns))?;
         Ok(self.get_window_event(time))
     }
 
@@ -355,7 +328,7 @@ pub struct TumblingWindowOnNumber {
     max_groups: u64,
     size: u64,
     ttl: Option<u64>,
-    script: Option<rentals::Window>,
+    script: Option<WindowDecl<'static>>,
 }
 
 impl TumblingWindowOnNumber {
@@ -364,25 +337,16 @@ impl TumblingWindowOnNumber {
         max_groups: u64,
         ttl: Option<u64>,
         script: Option<&WindowDecl>,
-        qry: &Arc<QueryRental>,
-    ) -> Result<Self> {
-        let script = script
-            .map(|s| {
-                rentals::Window::try_new(qry.clone(), |stmt| -> Result<_> {
-                    let id = &s.id;
-                    let windows = &stmt.suffix().windows;
-                    let window = windows.get(id).cloned();
-                    window.ok_or_else(|| format!("unknown window: {}", &s.id).into())
-                })
-            })
-            .transpose()?;
-        Ok(Self {
+    ) -> Self {
+        let script = script.cloned().map(WindowDecl::into_static);
+
+        Self {
             count: 0,
             max_groups,
             size,
             script,
             ttl,
-        })
+        }
     }
 }
 impl WindowTrait for TumblingWindowOnNumber {
@@ -392,15 +356,20 @@ impl WindowTrait for TumblingWindowOnNumber {
     fn max_groups(&self) -> u64 {
         self.max_groups
     }
-    fn on_event(&mut self, event: &Event) -> Result<WindowEvent> {
+    fn on_event(
+        &mut self,
+        data: &ValueAndMeta,
+        ingest_ns: u64,
+        origin_uri: &Option<EventOriginUri>,
+    ) -> Result<WindowEvent> {
         let count = self
             .script
             .as_ref()
-            .and_then(|script| script.suffix().script.as_ref())
+            .and_then(|script| script.script.as_ref())
             .map_or(Ok(1), |script| {
                 // TODO avoid origin_uri clone here
-                let context = EventContext::new(event.ingest_ns, event.origin_uri.clone());
-                let (unwind_event, event_meta) = event.data.parts();
+                let context = EventContext::new(ingest_ns, origin_uri.clone());
+                let (unwind_event, event_meta) = data.parts();
                 let value = script.run_imut(
                     &context,
                     AggrType::Emit,
@@ -436,9 +405,9 @@ impl TrickleSelect {
     pub fn with_stmt(
         operator_uid: u64,
         id: String,
-        dims: &Dims,
+        dims: &Groups,
         windows: Vec<(String, WindowImpl)>,
-        stmt_rentwrapped: &StmtRentalWrapper,
+        stmt: &srs::Stmt,
     ) -> Result<Self> {
         let windows = windows
             .into_iter()
@@ -451,16 +420,7 @@ impl TrickleSelect {
                 next_swap: 0,
             })
             .collect();
-        let select = rentals::Select::try_new(stmt_rentwrapped.stmt.clone(), move |stmt| {
-            if let tremor_script::ast::Stmt::Select(select) = stmt.suffix() {
-                Ok(select.clone())
-            } else {
-                Err(ErrorKind::PipelineError(
-                    "Trying to turn a non select into a select operator".into(),
-                )
-                .into())
-            }
-        })?;
+        let select = srs::Select::try_new_from_stmt(stmt)?;
         Ok(Self {
             id,
             windows,
@@ -486,11 +446,13 @@ fn execute_select_and_having(
     state: &Value<'static>,
     env: &Env,
     event_id: EventId,
-    event: &Event,
+    data: &ValueAndMeta,
+    ingest_ns: u64,
+    op_meta: &OpMeta,
     origin_uri: Option<EventOriginUri>,
     transactional: bool,
 ) -> Result<Option<(Cow<'static, str>, Event)>> {
-    let (event_payload, event_meta) = event.data.parts();
+    let (event_payload, event_meta) = data.parts();
 
     let value = stmt
         .target
@@ -516,10 +478,10 @@ fn execute_select_and_having(
         OUT,
         Event {
             id: event_id,
-            ingest_ns: event.ingest_ns,
+            ingest_ns,
             origin_uri,
             // TODO: this will ignore op_metas from all other events this one is based upon and might break operators requiring this
-            op_meta: event.op_meta.clone(),
+            op_meta: op_meta.clone(),
             is_batch: false,
             data: (result.into_static(), event_meta.clone_static()).into(),
             transactional,
@@ -529,6 +491,7 @@ fn execute_select_and_having(
 }
 
 /// accumulate the given `event` into the current `group`s aggregates
+#[allow(clippy::too_many_arguments)] // this is the price for no transmutation
 fn accumulate(
     opts: ExecOpts,
     node_meta: &NodeMetas,
@@ -536,15 +499,17 @@ fn accumulate(
     local_stack: &LocalStack,
     state: &mut Value<'static>,
     group: &mut GroupData,
-    event: &Event,
+    data: &ValueAndMeta,
+    id: &EventId,
+    transactional: bool,
 ) -> Result<()> {
     // we incorporate the event into this group below, so track it here
-    group.id.track(&event.id);
+    group.id.track(&id);
 
     // track transactional state for the given event
-    group.transactional = group.transactional || event.transactional;
+    group.transactional = group.transactional || transactional;
 
-    let (event_data, event_meta) = event.data.parts();
+    let (event_data, event_meta) = data.parts();
     for aggr in &mut group.aggrs {
         let invocable = &mut aggr.invocable;
         let mut argv: Vec<SCow<Value>> = Vec::with_capacity(aggr.args.len());
@@ -573,10 +538,10 @@ fn get_or_create_group<'window>(
     aggregates: &[InvokeAggrFn<'static>],
     group_str: &str,
     group_value: &Value,
-) -> Result<&'window mut GroupData<'static>> {
-    let this_groups = &mut window.dims.groups;
+) -> Result<&'window mut GroupData> {
+    let this_groups = &mut window.dims;
     let groups_len = this_groups.len() as u64;
-    let last_groups = &mut window.last_dims.groups;
+    let last_groups = &mut window.last_dims;
     let window_impl = &window.window_impl;
     let (_, this_group) = match this_groups.raw_entry_mut().from_key(group_str) {
         // avoid double-clojure
@@ -614,17 +579,36 @@ impl Operator for TrickleSelect {
         state: &mut Value<'static>,
         mut event: Event,
     ) -> Result<EventAndInsights> {
+        /// Simple enum to decide what we return
+        enum Res {
+            Event,
+            None,
+            Data(EventAndInsights),
+        }
+
         let Self {
             select,
             windows,
             event_id_gen,
             ..
         } = self;
-        select.rent_mut(|stmt| {
-            let opts = Self::opts();
-            // We guarantee at compile time that select in itself can't have locals, so this is safe
 
-            // NOTE We are unwrapping our rental wrapped stmt
+        let Event {
+            ingest_ns,
+            ref mut data,
+            ref id,
+            ref origin_uri,
+            ref op_meta,
+            transactional,
+            ..
+        } = event;
+
+        // TODO avoid origin_uri clone here
+        let ctx = EventContext::new(ingest_ns, origin_uri.clone());
+
+        let opts = Self::opts();
+
+        let res = data.apply_select(select, |data, stmt| -> Result<Res> {
 
             let SelectStmt {
                 stmt: ref select,
@@ -635,39 +619,30 @@ impl Operator for TrickleSelect {
                 ref node_meta,
             } = stmt;
 
-            // We have the situation where by contract the statement outlives the event
-            // this is encoded in the program logic by the shutdown pattern of
-            // sink -> pipeline -> source
-            // There is no way to explain this to rust's borrow checker so we circumvent it here
-            // We need this for clippy
+            consts.window = Value::null();
+            consts.group = Value::null();
+            consts.args = Value::null();
+
             let select: &Select = select;
-            // ALLOW: https://github.com/tremor-rs/tremor-runtime/issues/1024
-            let select: &Select = unsafe{ mem::transmute(select)};
-            // ALLOW: https://github.com/tremor-rs/tremor-runtime/issues/1024
-            let consts: &mut Consts  = unsafe{ mem::transmute(consts)};
+
             let Select {
                 target,
                 maybe_where,
                 maybe_having,
                 maybe_group_by,
                 ..
-             } = select;
+            } = select;
 
             let local_stack = tremor_script::interpreter::LocalStack::with_size(*locals);
-            consts.window = Value::null();
-            consts.group = Value::null();
-            consts.args = Value::null();
-            // TODO avoid origin_uri clone here
-            let ctx = EventContext::new(event.ingest_ns, event.origin_uri.clone());
 
             //
             // Before any select processing, we filter by where clause
             //
             if let Some(guard) = maybe_where {
-                let (unwind_event, event_meta) = event.data.parts();
+                let (unwind_event, event_meta) = data.parts();
                 let env = Env {
                     context: &ctx,
-                    consts: &consts,
+                    consts: consts.run(),
                     aggrs: &NO_AGGRS,
                     meta: &node_meta,
                     recursion_limit: tremor_script::recursion_limit(),
@@ -675,7 +650,7 @@ impl Operator for TrickleSelect {
                 let test = guard.run(opts, &env, unwind_event, state, event_meta, &local_stack)?;
                 if let Some(test) = test.as_bool() {
                     if !test {
-                        return Ok(EventAndInsights::default());
+                        return Ok(Res::None);
                     };
                 } else {
                     let s: &Select = &select;
@@ -689,7 +664,6 @@ impl Operator for TrickleSelect {
             let mut events = vec![];
 
             let mut group_values =  if let Some(group_by) = &maybe_group_by {
-                let data = event.data.suffix();
                 group_by.generate_groups(&ctx, data.value(), state, &node_meta, data.meta())?
             } else {
                 //
@@ -704,47 +678,43 @@ impl Operator for TrickleSelect {
                     consts.group = group_value.clone_static();
                     consts.group.push(group_str)?;
 
-                    let ret  = event.data.rent_mut(|data| -> Result<_> {
-                        let (unwind_event, event_meta): (&mut Value, &mut Value) = data.parts_mut();
+                    let (unwind_event, event_meta): (&mut Value, &mut Value) = data.parts_mut();
 
-                        let env = Env {
-                            context: &ctx,
-                            consts: &consts,
-                            aggrs: &NO_AGGRS,
-                            meta: &node_meta,
-                            recursion_limit: tremor_script::recursion_limit(),
-                        };
-                        let value =
-                            target
-                                .run(opts, &env, unwind_event, state, event_meta, &local_stack)?;
+                    let env = Env {
+                        context: &ctx,
+                        consts: consts.run(),
+                        aggrs: &NO_AGGRS,
+                        meta: &node_meta,
+                        recursion_limit: tremor_script::recursion_limit(),
+                    };
+                    let value =
+                        target
+                            .run(opts, &env, unwind_event, state, event_meta, &local_stack)?;
 
-                        let result = value.into_owned();
+                    let result = value.into_owned();
 
-                        // evaluate having clause, if one exists
+                    // evaluate having clause, if one exists
+                    #[allow(clippy::option_if_let_else)] // The borrow checker prevents map_or
+                    return if let Some(guard) = maybe_having {
+                        let test = guard.run(opts, &env, &result, state, &NULL, &local_stack)?;
                         #[allow(clippy::option_if_let_else)] // The borrow checker prevents map_or
-                        Ok(if let Some(guard) = maybe_having {
-                            let test = guard.run(opts, &env, &result, state, &NULL, &local_stack)?;
-                            #[allow(clippy::option_if_let_else)] // The borrow checker prevents map_or
-                            if let Some(test) = test.as_bool() {
-                                if test {
-                                    *unwind_event = result;
-                                    None
-                                } else {
-                                    Some(Ok(EventAndInsights::default()))
-                                }
+                        if let Some(test) = test.as_bool() {
+                            if test {
+                                *unwind_event = result;
+                                Ok(Res::Event)
                             } else {
-                                let s: &Select = &select;
-                                Some(Err(tremor_script::errors::query_guard_not_bool_err(
-                                    s, guard, &test, &node_meta,
-                                ).into()))
+                                Ok(Res::None)
                             }
                         } else {
-                            *unwind_event = result;
-                            None
-                        })
-                    })?;
-                    return ret.map_or_else(|| Ok(event.into()), |ret| ret);
-                }
+                            Err(tremor_script::errors::query_guard_not_bool_err(
+                                select, guard, &test, &node_meta,
+                            ).into())
+                        }
+                    } else {
+                        *unwind_event = result;
+                        Ok(Res::Event)
+                    }
+                };
                 vec![]
             };
 
@@ -757,9 +727,9 @@ impl Operator for TrickleSelect {
             // if no event came after `2 * eviction_ns()` this group is finally cleared out
             for window in windows.iter_mut() {
                 if let Some(eviction_ns) = window.window_impl.eviction_ns() {
-                    if window.next_swap < event.ingest_ns {
-                        window.next_swap = event.ingest_ns + eviction_ns;
-                        window.last_dims.groups.clear();
+                    if window.next_swap < ingest_ns {
+                        window.next_swap = ingest_ns + eviction_ns;
+                        window.last_dims.clear();
                         std::mem::swap(&mut window.dims, &mut window.last_dims);
                     }
                 }
@@ -783,7 +753,7 @@ impl Operator for TrickleSelect {
                         // evaluate select clause
                         let env = Env {
                             context: &ctx,
-                            consts: &consts,
+                            consts: consts.run(),
                             aggrs: &NO_AGGRS,
                             meta: &node_meta,
                             recursion_limit: tremor_script::recursion_limit(),
@@ -796,10 +766,12 @@ impl Operator for TrickleSelect {
                             &local_stack,
                             state,
                             &env,
-                            event.id.clone(),
-                            &event,
-                            event.origin_uri.clone(),
-                            event.transactional // no windows, we can safely pass through the events field
+                            id.clone(),
+                            &data,
+                            ingest_ns,
+                            op_meta,
+                            origin_uri.clone(),
+                            transactional // no windows, we can safely pass through the events field
                         )) {
                             events.push(port_and_event);
                         };
@@ -827,12 +799,12 @@ impl Operator for TrickleSelect {
                             &group_str,
                             &group_value,
                         ));
-                        let window_event = stry!(this_group.window.on_event(&event));
+                        let window_event = stry!(this_group.window.on_event(&data, ingest_ns, origin_uri));
                         if window_event.emit && !window_event.include {
                             // push
                             let env = Env {
                                 context: &ctx,
-                                consts: &consts,
+                                consts: consts.run(),
                                 aggrs: &this_group.aggrs,
                                 meta: &node_meta,
                                 recursion_limit: tremor_script::recursion_limit(),
@@ -847,8 +819,10 @@ impl Operator for TrickleSelect {
                                 state,
                                 &env,
                                 outgoing_event_id,
-                                &event,
-                                None,
+                                &data,
+                                ingest_ns,
+                                op_meta,
+                                    None,
                                 this_group.transactional
                             )) {
                                 events.push(port_and_event);
@@ -863,7 +837,7 @@ impl Operator for TrickleSelect {
                         // accumulate the current event
                         let env = Env {
                             context: &ctx,
-                            consts: &consts,
+                            consts: consts.run(),
                             aggrs: &NO_AGGRS,
                             meta: &node_meta,
                             recursion_limit: tremor_script::recursion_limit(),
@@ -875,14 +849,16 @@ impl Operator for TrickleSelect {
                             &local_stack,
                             state,
                             this_group,
-                            &event,
+                            data,
+                            id,
+                            transactional
                         ));
 
                         if window_event.emit && window_event.include {
                             // push
                             let env = Env {
                                 context: &ctx,
-                                consts: &consts,
+                                consts: consts.run(),
                                 aggrs: &this_group.aggrs,
                                 meta: &node_meta,
                                 recursion_limit: tremor_script::recursion_limit(),
@@ -898,8 +874,10 @@ impl Operator for TrickleSelect {
                                 state,
                                 &env,
                                 outgoing_event_id,
-                                &event,
-                                None,
+                                &data,
+                                ingest_ns,
+                                op_meta,
+                                    None,
                                 this_group.transactional
                             )) {
                                 events.push(port_and_event);
@@ -989,7 +967,7 @@ impl Operator for TrickleSelect {
                                     &group_str,
                                     &group_value,
                                 ));
-                                let window_event = stry!(this_group.window.on_event(&event));
+                                let window_event = stry!(this_group.window.on_event(&data, ingest_ns, origin_uri));
                                 if window_event.emit {
                                     emit_window_events.push(window_event);
                                 } else {
@@ -1021,7 +999,7 @@ impl Operator for TrickleSelect {
                                 // accumulate the current event
                                 let env = Env {
                                     context: &ctx,
-                                    consts: &consts,
+                                    consts: consts.run(),
                                     aggrs: &NO_AGGRS,
                                     meta: &node_meta,
                                     recursion_limit: tremor_script::recursion_limit(),
@@ -1033,8 +1011,10 @@ impl Operator for TrickleSelect {
                                     &local_stack,
                                     state,
                                     this_group,
-                                    &event,
-                                ));
+                                    data,
+                                    id,
+                                    transactional
+                                        ));
                                 false
                             } else {
                                 // should not happen
@@ -1077,7 +1057,7 @@ impl Operator for TrickleSelect {
                                     // push event
                                     let env = Env {
                                         context: &ctx,
-                                        consts: &consts,
+                                        consts: consts.run(),
                                         aggrs: &this_group.aggrs,
                                         meta: &node_meta,
                                         recursion_limit: tremor_script::recursion_limit(),
@@ -1094,8 +1074,10 @@ impl Operator for TrickleSelect {
                                         state,
                                         &env,
                                         outgoing_event_id,
-                                        &event,
-                                        None,
+                                        &data,
+                                        ingest_ns,
+                                        op_meta,
+                                                    None,
                                         this_group.transactional
                                     )) {
                                         events.push(port_and_event);
@@ -1114,7 +1096,7 @@ impl Operator for TrickleSelect {
                                     // push event
                                     let env = Env {
                                         context: &ctx,
-                                        consts: &consts,
+                                        consts: consts.run(),
                                         aggrs: &this_group.aggrs,
                                         meta: &node_meta,
                                         recursion_limit: tremor_script::recursion_limit(),
@@ -1138,8 +1120,10 @@ impl Operator for TrickleSelect {
                                         state,
                                         &env,
                                         outgoing_event_id,
-                                        &event,
-                                        None,
+                                        &data,
+                                        ingest_ns,
+                                        op_meta,
+                                                    None,
                                         this_group.transactional
                                     )) {
                                         events.push(port_and_event);
@@ -1203,7 +1187,7 @@ impl Operator for TrickleSelect {
                                     // accumulate the current event
                                     let env = Env {
                                         context: &ctx,
-                                        consts: &consts,
+                                        consts: consts.run(),
                                         aggrs: &NO_AGGRS,
                                         meta: &node_meta,
                                         recursion_limit: tremor_script::recursion_limit(),
@@ -1215,8 +1199,10 @@ impl Operator for TrickleSelect {
                                         &local_stack,
                                         state,
                                         this_group,
-                                        &event,
-                                    ));
+                                        data,
+                                        id,
+                                        transactional
+                                                ));
                                 }
                             }
 
@@ -1254,8 +1240,14 @@ impl Operator for TrickleSelect {
                     }
                 }
             }
-            Ok(events.into())
-        })
+            Ok(Res::Data(events.into()))
+        })?;
+
+        match res {
+            Res::Event => Ok(event.into()),
+            Res::None => Ok(EventAndInsights::default()),
+            Res::Data(data) => Ok(data),
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1281,7 +1273,7 @@ impl Operator for TrickleSelect {
                 if let Some(eviction_ns) = window.window_impl.eviction_ns() {
                     if window.next_swap < signal.ingest_ns {
                         window.next_swap = signal.ingest_ns + eviction_ns;
-                        window.last_dims.groups.clear();
+                        window.last_dims.clear();
                         std::mem::swap(&mut window.dims, &mut window.last_dims);
                     }
                 }
@@ -1299,13 +1291,9 @@ impl Operator for TrickleSelect {
                 node_meta,
             }  = stmt;
             let mut res = EventAndInsights::default();
-            // artificial event
-            let artificial_event = Event {
-                id: signal.id.clone(),
-                ingest_ns,
-                data: (Value::null(), Value::object()).into(),
-                ..Event::default()
-            };
+
+            let vm: ValueAndMeta = (Value::null(), Value::object()).into();
+            let op_meta = OpMeta::default();
             let local_stack = tremor_script::interpreter::LocalStack::with_size(*locals);
 
             consts.window = Value::null();
@@ -1321,9 +1309,8 @@ impl Operator for TrickleSelect {
                         // iterate all groups, including the ones from last_dims
                         for (group_str, group_data) in window
                             .dims
-                            .groups
                             .iter_mut()
-                            .chain(window.last_dims.groups.iter_mut())
+                            .chain(window.last_dims.iter_mut())
                         {
                             consts.group = group_data.group.clone_static();
                             consts.group.push(group_str.clone())?;
@@ -1333,7 +1320,7 @@ impl Operator for TrickleSelect {
                                 // evaluate the event and push
                                 let env = Env {
                                     context: &ctx,
-                                    consts: &consts,
+                                    consts: consts.run(),
                                     aggrs: &group_data.aggrs,
                                     meta: &node_meta,
                                     recursion_limit: tremor_script::recursion_limit(),
@@ -1348,7 +1335,9 @@ impl Operator for TrickleSelect {
                                     state,
                                     &env,
                                     outgoing_event_id,
-                                    &artificial_event,
+                                    &vm,
+                                    ingest_ns,
+                                    &op_meta,
                                     None,
                                     group_data.transactional
                                 ));
@@ -1380,9 +1369,8 @@ impl Operator for TrickleSelect {
                         .flat_map(|window| {
                             (*window)
                                 .dims
-                                .groups
                                 .iter()
-                                .chain(window.last_dims.groups.iter())
+                                .chain(window.last_dims.iter())
                         })
                         .map(|(group_str, group_data)| {
                             // trick the borrow checker, so we can reference self.windows mutably below
@@ -1464,7 +1452,7 @@ impl Operator for TrickleSelect {
                                     // push event
                                     let env = Env {
                                         context: &ctx,
-                                        consts: &consts,
+                                        consts: consts.run(),
                                         aggrs: &this_group.aggrs,
                                         meta: &node_meta,
                                         recursion_limit: tremor_script::recursion_limit(),
@@ -1481,8 +1469,10 @@ impl Operator for TrickleSelect {
                                         state,
                                         &env,
                                         outgoing_event_id,
-                                        &artificial_event,
-                                        None,
+                                        &vm,
+                                        ingest_ns,
+                                        &op_meta,
+                                            None,
                                         this_group.transactional
                                     )) {
                                         res.events.push(port_and_event);
@@ -1499,7 +1489,7 @@ impl Operator for TrickleSelect {
                                     // push event
                                     let env = Env {
                                         context: &ctx,
-                                        consts: &consts,
+                                        consts: consts.run(),
                                         aggrs: &this_group.aggrs,
                                         meta: &node_meta,
                                         recursion_limit: tremor_script::recursion_limit(),
@@ -1523,8 +1513,10 @@ impl Operator for TrickleSelect {
                                         state,
                                         &env,
                                         outgoing_event_id,
-                                        &artificial_event,
-                                        None,
+                                        &vm,
+                                        ingest_ns,
+                                        &op_meta,
+                                            None,
                                         this_group.transactional
                                     )) {
                                         res.events.push(port_and_event);
@@ -1620,13 +1612,13 @@ impl Operator for TrickleSelect {
 
 #[cfg(test)]
 mod test {
+
     #![allow(clippy::float_cmp)]
     use crate::query::window_decl_to_impl;
 
     use super::*;
 
-    use simd_json::{json, StaticNode};
-    use tremor_script::{ast::Stmt, query::StmtRental};
+    use tremor_script::ast::Stmt;
     use tremor_script::{
         ast::{self, Ident, ImutExpr, Literal},
         path::ModulePath,
@@ -1635,6 +1627,7 @@ mod test {
         ast::{AggregateScratch, Consts},
         Value,
     };
+    use tremor_value::literal;
 
     fn test_target<'test>() -> ast::ImutExpr<'test> {
         let target: ast::ImutExpr<'test> = ImutExpr::from(ast::Literal {
@@ -1671,13 +1664,16 @@ mod test {
         }
     }
 
+    fn ingest_ns(s: u64) -> u64 {
+        s * 1_000_000_000
+    }
     fn test_event(s: u64) -> Event {
         Event {
             id: (0, 0, s).into(),
-            ingest_ns: s * 1_000_000_000,
-            data: Value::from(json!({
+            ingest_ns: ingest_ns(s),
+            data: literal!({
                "h2g2" : 42,
-            }))
+            })
             .into(),
             ..Event::default()
         }
@@ -1687,19 +1683,14 @@ mod test {
         Event {
             id: (0, 0, s).into(),
             ingest_ns: s + 100,
-            data: Value::from(json!({ "group": group })).into(),
+            data: literal!({ "group": group }).into(),
             transactional,
             ..Event::default()
         }
     }
 
-    use std::{collections::BTreeSet, sync::Arc};
-
-    fn test_select(
-        uid: u64,
-        stmt: tremor_script::query::StmtRentalWrapper,
-    ) -> Result<TrickleSelect> {
-        let groups = Dims::new(stmt.stmt.clone());
+    fn test_select(uid: u64, stmt: srs::Stmt) -> Result<TrickleSelect> {
+        let groups = Groups::new();
         let windows = vec![
             (
                 "w15s".into(),
@@ -1780,16 +1771,12 @@ mod test {
             &aggr_reg,
         )
         .map_err(tremor_script::errors::CompilerError::error)?;
-        let stmt_rental = StmtRental::try_new(Arc::new(query.clone()), |q| {
-            q.suffix()
-                .stmts
+        let stmt = srs::Stmt::try_new_from_query(&query.query, |q| {
+            q.stmts
                 .first()
                 .cloned()
                 .ok_or_else(|| Error::from("Invalid query"))
         })?;
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
         Ok(test_select(1, stmt)?)
     }
 
@@ -1847,28 +1834,24 @@ mod test {
                 _ => None,
             })
             .collect();
-        let stmt_rental = StmtRental::try_new(Arc::new(query.clone()), |q| {
-            q.suffix()
-                .stmts
+        let stmt = srs::Stmt::try_new_from_query(&query.query, |q| {
+            q.stmts
                 .iter()
                 .find(|stmt| matches!(*stmt, Stmt::Select(_)))
                 .cloned()
                 .ok_or_else(|| Error::from("Invalid query, expected only 1 select statement"))
         })?;
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
         let windows: Vec<(String, WindowImpl)> = window_decls
             .iter()
             .enumerate()
             .map(|(i, window_decl)| {
                 (
                     i.to_string(),
-                    window_decl_to_impl(window_decl, &query.query).unwrap(), // yes, indeed!
+                    window_decl_to_impl(window_decl).unwrap(), // yes, indeed!
                 )
             })
             .collect();
-        let groups = Dims::new(stmt.stmt.clone());
+        let groups = Groups::new();
 
         let id = "select".to_string();
         Ok(TrickleSelect::with_stmt(42, id, &groups, windows, &stmt)?)
@@ -1906,10 +1889,10 @@ mod test {
         let event = Event {
             id: (1, 1, 300).into(),
             ingest_ns: 1_000,
-            data: Value::from(json!({
+            data: literal!({
                "time" : 4,
                "g": "group"
-            }))
+            })
             .into(),
             ..Event::default()
         };
@@ -1927,10 +1910,10 @@ mod test {
         let event = Event {
             id: (1, 1, 300).into(),
             ingest_ns: 3_000,
-            data: Value::from(json!({
+            data: literal!({
                "time" : 11,
                "g": "group"
-            }))
+            })
             .into(),
             ..Event::default()
         };
@@ -1962,9 +1945,9 @@ mod test {
         let event = Event {
             id: (1, 1, 300).into(),
             ingest_ns: 2,
-            data: Value::from(json!({
+            data: literal!({
                "g": "group"
-            }))
+            })
             .into(),
             ..Event::default()
         };
@@ -2028,9 +2011,9 @@ mod test {
         let event = Event {
             id: (1, 1, 300).into(),
             ingest_ns: 300,
-            data: Value::from(json!({
+            data: literal!({
                "cat" : 42,
-            }))
+            })
             .into(),
             transactional: true,
             ..Event::default()
@@ -2231,23 +2214,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(1, stmt)?;
         assert!(try_enqueue(&mut op, test_event(0))?.is_none());
@@ -2271,23 +2240,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(2, stmt)?;
 
@@ -2306,29 +2261,14 @@ mod test {
         let mut stmt_ast = test_stmt(target);
 
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
         stmt_ast.maybe_where = Some(ImutExpr::from(ast::Literal {
             mid: 0,
             value: Value::from(false),
         }));
         let stmt_ast = test_select_stmt(stmt_ast);
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
-
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(3, stmt)?;
         let next = try_enqueue(&mut op, test_event(0))?;
@@ -2347,23 +2287,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(4, stmt)?;
 
@@ -2387,23 +2313,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(5, stmt)?;
 
@@ -2432,23 +2344,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(6, stmt)?;
         let event = test_event(0);
@@ -2492,23 +2390,9 @@ mod test {
 
         let stmt_ast = test_select_stmt(stmt_ast);
         let script = "fake".to_string();
-        let script_box = Box::new(script.clone());
-        let query_rental = Arc::new(tremor_script::query::QueryRental::new(script_box, |_| {
-            test_query(stmt_ast.clone())
-        }));
+        let query = srs::Query::try_new::<Error, _>(script, |_| Ok(test_query(stmt_ast.clone())))?;
 
-        let query = tremor_script::query::Query {
-            query: query_rental,
-            locals: 0,
-            source: script,
-            warnings: BTreeSet::new(),
-        };
-
-        let stmt_rental = StmtRental::new(Arc::new(query.clone()), |_| stmt_ast);
-
-        let stmt = tremor_script::query::StmtRentalWrapper {
-            stmt: Arc::new(stmt_rental),
-        };
+        let stmt = srs::Stmt::try_new_from_query::<Error, _>(&query, |_| Ok(stmt_ast))?;
 
         let mut op = test_select(7, stmt)?;
         let event = test_event(0);
@@ -2519,27 +2403,8 @@ mod test {
         Ok(())
     }
 
-    // get a stmt rental for a stupid script
-    fn stmt_rental() -> Result<tremor_script::query::Query> {
-        let file_name = "foo";
-        let reg = tremor_script::registry();
-        let aggr_reg = tremor_script::aggr_registry();
-        let module_path = tremor_script::path::load();
-        let cus = vec![];
-        Ok(tremor_script::query::Query::parse(
-            &module_path,
-            &file_name,
-            "select event from in into out;",
-            cus,
-            &reg,
-            &aggr_reg,
-        )
-        .map_err(tremor_script::errors::CompilerError::error)?)
-    }
-
     #[test]
     fn tumbling_window_on_time_emit() -> Result<()> {
-        let q = stmt_rental()?;
         // interval = 10 seconds
         let mut window = TumblingWindowOnTime::from_stmt(
             10 * 1_000_000_000,
@@ -2547,24 +2412,22 @@ mod test {
             WindowImpl::DEFAULT_MAX_GROUPS,
             None,
             None,
-            &q.query,
-        )?;
+        );
+        let vm = literal!({
+           "h2g2" : 42,
+        })
+        .into();
         assert_eq!(
             WindowEvent {
                 include: false,
                 opened: true,
                 emit: false
             },
-            window.on_event(&test_event(5))?
+            window.on_event(&vm, ingest_ns(5), &None)?
         );
-        assert_eq!(WindowEvent::all_false(), window.on_event(&test_event(10))?);
         assert_eq!(
-            WindowEvent {
-                include: false,
-                opened: true,
-                emit: true
-            },
-            window.on_event(&test_event(15))? // exactly on time
+            WindowEvent::all_false(),
+            window.on_event(&vm, ingest_ns(10), &None)?
         );
         assert_eq!(
             WindowEvent {
@@ -2572,18 +2435,17 @@ mod test {
                 opened: true,
                 emit: true
             },
-            window.on_event(&test_event(26))? // exactly on time
+            window.on_event(&vm, ingest_ns(15), &None)? // exactly on time
+        );
+        assert_eq!(
+            WindowEvent {
+                include: false,
+                opened: true,
+                emit: true
+            },
+            window.on_event(&vm, ingest_ns(26), &None)? // exactly on time
         );
         Ok(())
-    }
-
-    fn json_event(ingest_ns: u64, payload: OwnedValue) -> Event {
-        Event {
-            id: (0, 0, ingest_ns).into(),
-            ingest_ns,
-            data: Value::from(payload).into(),
-            ..Event::default()
-        }
     }
 
     #[test]
@@ -2612,7 +2474,7 @@ mod test {
             other => return Err(format!("Didnt get a window decl, got: {:?}", other).into()),
         };
         let mut params = halfbrown::HashMap::with_capacity(1);
-        params.insert("size".to_string(), Value::Static(StaticNode::U64(3)));
+        params.insert("size".to_string(), Value::from(3));
         let interval = window_decl
             .params
             .get("interval")
@@ -2624,29 +2486,28 @@ mod test {
             WindowImpl::DEFAULT_MAX_GROUPS,
             None,
             Some(&window_decl),
-            &q.query,
-        )?;
-        let json1 = json!({
+        );
+        let json1 = literal!({
             "timestamp": 1_000_000_000
-        });
+        })
+        .into();
         assert_eq!(
             WindowEvent {
                 opened: true,
                 include: false,
                 emit: false
             },
-            window.on_event(&json_event(1, json1))?
+            window.on_event(&json1, 1, &None)?
         );
-        let json2 = json!({
+        let json2 = literal!({
             "timestamp": 1_999_999_999
-        });
-        assert_eq!(
-            WindowEvent::all_false(),
-            window.on_event(&json_event(2, json2))?
-        );
-        let json3 = json!({
+        })
+        .into();
+        assert_eq!(WindowEvent::all_false(), window.on_event(&json2, 2, &None)?);
+        let json3 = literal!({
             "timestamp": 2_000_000_000
-        });
+        })
+        .into();
         // ignoring on_tick as we have a script
         assert_eq!(WindowEvent::all_false(), window.on_tick(2_000_000_000)?);
         assert_eq!(
@@ -2655,22 +2516,20 @@ mod test {
                 include: false,
                 emit: true
             },
-            window.on_event(&json_event(3, json3))?
+            window.on_event(&json3, 3, &None)?
         );
         Ok(())
     }
 
     #[test]
     fn tumbling_window_on_time_on_tick() -> Result<()> {
-        let q = stmt_rental()?;
         let mut window = TumblingWindowOnTime::from_stmt(
             100,
             WindowImpl::DEFAULT_EMIT_EMPTY_WINDOWS,
             WindowImpl::DEFAULT_MAX_GROUPS,
             None,
             None,
-            &q.query,
-        )?;
+        );
         assert_eq!(
             WindowEvent {
                 opened: true,
@@ -2690,7 +2549,7 @@ mod test {
         );
         assert_eq!(
             WindowEvent::all_false(),
-            window.on_event(&json_event(101, json!({})))?
+            window.on_event(&ValueAndMeta::default(), 101, &None)?
         );
         assert_eq!(WindowEvent::all_false(), window.on_tick(102)?);
         assert_eq!(
@@ -2706,15 +2565,8 @@ mod test {
 
     #[test]
     fn tumbling_window_on_time_emit_empty_windows() -> Result<()> {
-        let q = stmt_rental()?;
-        let mut window = TumblingWindowOnTime::from_stmt(
-            100,
-            true,
-            WindowImpl::DEFAULT_MAX_GROUPS,
-            None,
-            None,
-            &q.query,
-        )?;
+        let mut window =
+            TumblingWindowOnTime::from_stmt(100, true, WindowImpl::DEFAULT_MAX_GROUPS, None, None);
         assert_eq!(
             WindowEvent {
                 opened: true,
@@ -2734,7 +2586,7 @@ mod test {
         );
         assert_eq!(
             WindowEvent::all_false(),
-            window.on_event(&json_event(101, json!({})))?
+            window.on_event(&ValueAndMeta::default(), 101, &None)?
         );
         assert_eq!(WindowEvent::all_false(), window.on_tick(102)?);
         assert_eq!(
@@ -2752,33 +2604,57 @@ mod test {
     #[test]
     fn no_window_emit() -> Result<()> {
         let mut window = NoWindow::default();
-        assert_eq!(WindowEvent::all_true(), window.on_event(&test_event(0))?);
+
+        let vm = literal!({
+           "h2g2" : 42,
+        })
+        .into();
+
+        assert_eq!(
+            WindowEvent::all_true(),
+            window.on_event(&vm, ingest_ns(0), &None)?
+        );
         assert_eq!(WindowEvent::all_false(), window.on_tick(0)?);
-        assert_eq!(WindowEvent::all_true(), window.on_event(&test_event(1))?);
+        assert_eq!(
+            WindowEvent::all_true(),
+            window.on_event(&vm, ingest_ns(1), &None)?
+        );
         assert_eq!(WindowEvent::all_false(), window.on_tick(1)?);
         Ok(())
     }
 
     #[test]
     fn tumbling_window_on_number_emit() -> Result<()> {
-        let q = stmt_rental()?;
-        let mut window = TumblingWindowOnNumber::from_stmt(
-            3,
-            WindowImpl::DEFAULT_MAX_GROUPS,
-            None,
-            None,
-            &q.query,
-        )?;
+        let mut window =
+            TumblingWindowOnNumber::from_stmt(3, WindowImpl::DEFAULT_MAX_GROUPS, None, None);
+
+        let vm = literal!({
+           "h2g2" : 42,
+        })
+        .into();
+
         // do not emit yet
-        assert_eq!(WindowEvent::all_false(), window.on_event(&test_event(0))?);
+        assert_eq!(
+            WindowEvent::all_false(),
+            window.on_event(&vm, ingest_ns(0), &None)?
+        );
         assert_eq!(WindowEvent::all_false(), window.on_tick(1_000_000_000)?);
         // do not emit yet
-        assert_eq!(WindowEvent::all_false(), window.on_event(&test_event(1))?);
+        assert_eq!(
+            WindowEvent::all_false(),
+            window.on_event(&vm, ingest_ns(1), &None)?
+        );
         assert_eq!(WindowEvent::all_false(), window.on_tick(2_000_000_000)?);
         // emit and open on the third event
-        assert_eq!(WindowEvent::all_true(), window.on_event(&test_event(2))?);
+        assert_eq!(
+            WindowEvent::all_true(),
+            window.on_event(&vm, ingest_ns(2), &None)?
+        );
         // no emit here, next window
-        assert_eq!(WindowEvent::all_false(), window.on_event(&test_event(3))?);
+        assert_eq!(
+            WindowEvent::all_false(),
+            window.on_event(&vm, ingest_ns(3), &None)?
+        );
 
         Ok(())
     }

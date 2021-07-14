@@ -294,7 +294,7 @@ pub(crate) fn run_suite(
             let context = &EventContext::new(nanotime(), Some(EventOriginUri::default()));
             let env = Env {
                 context,
-                consts: &script.consts,
+                consts: script.consts.run(),
                 aggrs: &script.aggregates,
                 meta: &script.node_meta,
                 recursion_limit: tremor_script::recursion_limit(),

@@ -14,42 +14,16 @@
 
 use crate::op::prelude::*;
 use std::mem;
-use std::sync::Arc;
-use tremor_script::{
-    ast::{self, query},
-    prelude::*,
-};
-
-rental! {
-    pub mod rentals {
-        use tremor_script::query::StmtRental;
-        use std::sync::Arc;
-        use halfbrown::HashMap;
-        use serde::Serialize;
-        use super::*;
-
-        #[rental(covariant,debug)]
-        pub struct Script {
-            stmt: Arc<StmtRental>,
-            script: tremor_script::ast::ScriptDecl<'stmt>,
-        }
-    }
-}
+use tremor_script::{highlighter, prelude::*, srs, Query};
 
 #[derive(Debug)]
-pub struct Trickle {
+pub struct Script {
     pub id: String,
-    pub defn: Arc<tremor_script::query::StmtRental>,
-    pub node: Arc<tremor_script::query::StmtRental>,
-    script: rentals::Script,
+    script: srs::ScriptDecl,
 }
 
-impl Trickle {
-    pub fn with_stmt(
-        id: String,
-        defn_rentwrapped: tremor_script::query::StmtRentalWrapper,
-        node_rentwrapped: tremor_script::query::StmtRentalWrapper,
-    ) -> Result<Self> {
+impl Script {
+    pub fn with_stmt(id: String, decl: &srs::Stmt, instance: &srs::Stmt) -> Result<Self> {
         // We require Value to be static here to enforce the constraint that
         // arguments name/value pairs live at least as long as the operator nodes that have
         // dependencies on them.
@@ -65,69 +39,15 @@ impl Trickle {
         // The binding association chooses the definition simply as it hosts the parsed script.
         //
 
-        let script = rentals::Script::try_new(defn_rentwrapped.stmt.clone(), |defn_rentwrapped| {
-            let args: Value;
+        let mut script = srs::ScriptDecl::try_new_from_stmt(decl)?;
 
-            let mut params = HashMap::new();
-            if let ast::Stmt::ScriptDecl(ref defn) = defn_rentwrapped.suffix() {
-                if let Some(p) = &defn.params {
-                    // Set params from decl as meta vars
-                    for (name, value) in p {
-                        // We could clone here since we bind Script to defn_rentwrapped.stmt's lifetime
-                        params.insert(Cow::from(name.clone()), value.clone());
-                    }
-                    // Set params from instance as meta vars ( eg: upsert ~= override + add )
-                    if let query::Stmt::Script(instance) = node_rentwrapped.suffix() {
-                        if let Some(map) = &instance.params {
-                            for (name, value) in map {
-                                // We can not clone here since we do not bind Script to node_rentwrapped's lifetime
-                                params.insert(Cow::from(name.clone()), value.clone_static());
-                            }
-                        }
-                    } else {
-                        return Err(ErrorKind::PipelineError(
-                        "Trying to turn something into script create that isn't a script create"
-                            .into(),
-                    )
-                    .into());
-                    }
-                }
-                args = tremor_script::Value::from(params);
-            } else {
-                return Err(ErrorKind::PipelineError(
-                    "Trying to turn something into script define that isn't a script define".into(),
-                )
-                .into());
-            };
-            let script = match defn_rentwrapped.suffix() {
-                query::Stmt::ScriptDecl(ref script) => script.clone(),
-                _other => {
-                    return Err(ErrorKind::PipelineError(
-                        "Trying to turn a non script into a script operator".into(),
-                    )
-                    .into())
-                }
-            };
-            // This is sound since defn_rentwrapped.stmt is an arc by cloning
-            // it we ensure that the referenced data remains available until
-            // the rental is dropped.
-            let mut decl = *script;
+        script.apply_stmt(instance)?;
 
-            // decl.script.consts = vec![Value::null(), Value::null(), Value::null()];
-            decl.script.consts.args = args;
-            Ok(decl)
-        })?;
-
-        Ok(Self {
-            id,
-            defn: defn_rentwrapped.stmt,
-            node: node_rentwrapped.stmt,
-            script,
-        })
+        Ok(Self { id, script })
     }
 }
 
-impl Operator for Trickle {
+impl Operator for Script {
     fn on_event(
         &mut self,
         _uid: u64,
@@ -137,17 +57,10 @@ impl Operator for Trickle {
     ) -> Result<EventAndInsights> {
         let context = EventContext::new(event.ingest_ns, event.origin_uri);
 
-        let script = &self.script.suffix().script;
-        // The issue we're facing here is that we can't explain to rust that the suffix
-        // of script outlives the event, this is part of the contract on entity lifetimes and rusts
-        // borrow model does not give a way to express this at the moment.
-        // ALLOW: https://github.com/tremor-rs/tremor-runtime/issues/1024
-        let script: &tremor_script::ast::Script = unsafe { mem::transmute(script) };
-
-        let port = event.data.rent_mut(|data| {
+        let port = event.data.apply_decl(&self.script, |data, decl| {
             let (unwind_event, event_meta) = data.parts_mut();
 
-            let value = script.run(
+            let value = decl.script.run(
                 &context,
                 AggrType::Emit,
                 unwind_event, // event
@@ -164,8 +77,22 @@ impl Operator for Trickle {
                 }
                 Ok(Return::Drop) => None,
                 Err(e) => {
+                    let s = self
+                        .script
+                        .raw()
+                        .get(0)
+                        .and_then(|v| {
+                            let s: &[u8] = &v;
+                            let s = std::str::from_utf8(s).ok()?;
+                            let mut h = highlighter::Dumb::default();
+                            Query::format_error_from_script(s, &mut h, &e).ok()?;
+                            Some(h.to_string())
+                        })
+                        .unwrap_or_default();
+
                     let mut o = Value::from(hashmap! {
-                        "error".into() => Value::from(self.node.head().format_error(&e)),
+
+                        "error".into() => Value::from(s),
                     });
                     mem::swap(&mut o, unwind_event);
                     if let Some(error) = unwind_event.as_object_mut() {

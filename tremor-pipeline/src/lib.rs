@@ -32,8 +32,6 @@
 extern crate serde_derive;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate rental;
 
 use crate::errors::{ErrorKind, Result};
 use crate::op::prelude::*;
@@ -51,7 +49,6 @@ use std::iter::Iterator;
 use std::str::FromStr;
 use std::{fmt, sync::Mutex};
 use tremor_script::prelude::*;
-use tremor_script::query::StmtRentalWrapper;
 
 /// Pipeline Errors
 pub mod errors;
@@ -87,8 +84,8 @@ pub type ConfigMap = Option<serde_yaml::Value>;
 pub type NodeLookupFn = fn(
     config: &NodeConfig,
     uid: u64,
-    defn: Option<StmtRentalWrapper>,
-    node: Option<StmtRentalWrapper>,
+    defn: Option<&tremor_script::srs::Stmt>,
+    node: Option<&tremor_script::srs::Stmt>,
     windows: Option<HashMap<String, WindowImpl>>,
 ) -> Result<OperatorNode>;
 

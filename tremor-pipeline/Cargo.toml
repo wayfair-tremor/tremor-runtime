@@ -7,30 +7,30 @@ name = "tremor-pipeline"
 version = "0.11.4"
 
 [dependencies]
-beef = {version = "0.5", features = ["impl_serde"]}
+beef = { version="0.5", features=["impl_serde"] }
 byteorder = "1"
 error-chain = "0.12"
 halfbrown = "0.1"
-indexmap = {version = "1", features = ["serde-1"]}
+indexmap = { version="1", features=["serde-1"] }
 lazy_static = "1"
 log = "0.4"
 lru = "0.6"
 petgraph = "0.6"
 regex = "1"
-rental = "0.5"
-rust-bert = {version = "0.10.0", optional = true}
+rust-bert = { version="0.10.0", optional=true }
 serde = "1"
 serde_derive = "1"
 serde_yaml = "0.8"
-simd-json = {version = "0.4", features = ["known-key"]}
+simd-json = { version="0.4", features=["known-key"] }
 simd-json-derive = "0.2"
 sled = "0.34"
-tremor-common = {path = "../tremor-common"}
-tremor-influx = {path = "../tremor-influx"}
-tremor-script = {path = "../tremor-script"}
+tremor-common = { path="../tremor-common" }
+tremor-influx = { path="../tremor-influx" }
+tremor-script = { path="../tremor-script" }
+tremor-value = { path="../tremor-value" }
 url = "2.2.2"
 value-trait = "0.2"
-window = {git = "https://github.com/tremor-rs/window.git", tag = "v0.1.1"}
+window = { git="https://github.com/tremor-rs/window.git", tag="v0.1.1" }
 
 [dev-dependencies]
 base64 = "0.13"

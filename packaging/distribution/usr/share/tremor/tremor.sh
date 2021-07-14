@@ -29,15 +29,15 @@ else
     ARTEFACTS=""
 
     # Load *.yaml files
-    YAMLS=$(find ${CFG_DIR} -name '*.yaml' -print 2>/dev/null)
+    YAMLS=$(find ${CFG_DIR} -name '*.yaml' -print 2>/dev/null | sort)
     [ ! -z "$YAMLS" ] && ARTEFACTS="$ARTEFACTS $YAMLS"
 
     # Load *.yml files
-    YMLS=$(find ${CFG_DIR} -name '*.yml' -print 2>/dev/null)
+    YMLS=$(find ${CFG_DIR} -name '*.yml' -print 2>/dev/null | sort)
     [ ! -z "$YMLS" ] && ARTEFACTS="$ARTEFACTS $YMLS"
 
     # Load *.trickle files
-    QUERIES=$(find ${CFG_DIR}/ -name '*.trickle' -print 2>/dev/null)
+    QUERIES=$(find ${CFG_DIR}/ -name '*.trickle' -print 2>/dev/null | sort)
     [ ! -z "$QUERIES" ] && ARTEFACTS="$ARTEFACTS $QUERIES"
 
     ARGS="server run --logger-config ${LOGGER_FILE}"

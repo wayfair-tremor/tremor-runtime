@@ -14,7 +14,7 @@
 
 use crate::ast::raw::*;
 use crate::ast::query::raw::*;
-use crate::ast::{BinOpKind, UnaryOpKind, LexicalUnit};
+use crate::ast::{BinOpKind, UnaryOpKind};
 use crate::lexer::Token;
 use crate::pos::Location;
 use crate::Value;

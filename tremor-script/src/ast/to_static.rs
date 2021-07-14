@@ -22,12 +22,14 @@ use crate::CustomFn;
 
 use super::{
     ArrayPattern, ArrayPredicatePattern, AssignPattern, BinExpr, Bytes, BytesPart, ClauseGroup,
-    ClausePreCondition, Comprehension, ComprehensionCase, DefaultCase, EmitExpr, EventPath, Expr,
-    Field, IfElse, ImutExpr, ImutExprInt, Invocable, Invoke, InvokeAggrFn, List, Literal,
-    LocalPath, Match, Merge, MetadataPath, Patch, PatchOperation, Path, Pattern, PredicateClause,
-    PredicatePattern, Record, RecordPattern, Recur, ReservedPath, Segment, StatePath,
-    StrLitElement, StringLit, TuplePattern, UnaryExpr,
+    ClausePreCondition, Comprehension, ComprehensionCase, Consts, DefaultCase, EmitExpr, EventPath,
+    Expr, Field, IfElse, ImutExpr, ImutExprInt, Invocable, Invoke, InvokeAggrFn, List, Literal,
+    LocalPath, Match, Merge, MetadataPath, OperatorDecl, Patch, PatchOperation, Path, Pattern,
+    PredicateClause, PredicatePattern, Record, RecordPattern, Recur, ReservedPath, Script, Segment,
+    StatePath, StrLitElement, StringLit, TuplePattern, UnaryExpr,
 };
+
+use super::query::WindowDecl;
 
 impl<'script> ImutExpr<'script> {
     pub(crate) fn into_static(self) -> ImutExpr<'static> {
@@ -969,6 +971,111 @@ impl<'script> InvokeAggrFn<'script> {
             module,
             fun,
             args: args.into_iter().map(ImutExpr::into_static).collect(),
+        }
+    }
+}
+
+impl<'script> Script<'script> {
+    pub(crate) fn into_static(self) -> Script<'static> {
+        let Script {
+            imports,
+            exprs,
+            consts,
+            aggregates,
+            windows,
+            functions,
+            locals,
+            node_meta,
+            docs,
+        } = self;
+        Script {
+            imports,
+            exprs: exprs.into_iter().map(Expr::into_static).collect(),
+            consts: consts.into_static(),
+            aggregates: aggregates
+                .into_iter()
+                .map(InvokeAggrFn::into_static)
+                .collect(),
+            windows: windows
+                .into_iter()
+                .map(|(k, v)| (k, v.into_static()))
+                .collect(),
+            functions: functions.into_iter().map(CustomFn::into_static).collect(),
+            locals,
+            node_meta,
+            docs,
+        }
+    }
+}
+
+impl<'script> Consts<'script> {
+    pub(crate) fn into_static(self) -> Consts<'static> {
+        let Consts {
+            names,
+            values,
+            args,
+            group,
+            window,
+        } = self;
+        Consts {
+            names,
+            values: values.into_iter().map(Value::into_static).collect(),
+            args: args.into_static(),
+            group: group.into_static(),
+            window: window.into_static(),
+        }
+    }
+}
+
+impl<'script> WindowDecl<'script> {
+    /// Removes lifetime dependencies from a `WindowDecl`
+    #[must_use]
+    pub fn into_static(self) -> WindowDecl<'static> {
+        let WindowDecl {
+            mid,
+            module,
+            id,
+            kind,
+            params,
+            script,
+        } = self;
+        WindowDecl {
+            mid,
+            module,
+            id,
+            kind,
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k, v.into_static()))
+                .collect(),
+
+            script: script.map(Script::into_static),
+        }
+    }
+}
+
+impl<'script> OperatorDecl<'script> {
+    /// Removes lifetime dependencies from a `WindowDecl`
+    #[must_use]
+    pub fn into_static(self) -> OperatorDecl<'static> {
+        let OperatorDecl {
+            mid,
+            kind,
+            module,
+            id,
+            params,
+        } = self;
+        OperatorDecl {
+            mid,
+            kind,
+            module,
+            id,
+            params: params.map(|params| {
+                params
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into_static()))
+                    .collect()
+            }),
         }
     }
 }

@@ -176,9 +176,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.41"
+version = "1.0.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15af2628f6890fe2609a3b91bef4c83450512802e59489f9c1cb1fa5df064a61"
+checksum = "595d3cfa7a60d4555cb5067b99f07142a08ea778de5cf993f7b75c7d8fabc486"
 
 [[package]]
 name = "arc-swap"
@@ -550,9 +550,9 @@ dependencies = [
 
 [[package]]
 name = "async-tungstenite"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07b30ef0ea5c20caaa54baea49514a206308989c68be7ecd86c7f956e4da6378"
+checksum = "8645e929ec7964448a901db9da30cd2ae8c7fecf4d6176af427837531dbbb63b"
 dependencies = [
  "async-std",
  "futures-io",
@@ -5667,9 +5667,9 @@ dependencies = [
 
 [[package]]
 name = "syslog_loose"
-version = "0.10.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b87c43adeba9354cdb8527ad333bae41caf5cad5ce5cbeb8b11eafcf9de5e07a"
+checksum = "cb6ef7fbec50f39dab5b134b7997e822086429d39920e1bd7db9a17c85f06eeb"
 dependencies = [
  "chrono",
  "nom 6.1.2",
@@ -6465,7 +6465,6 @@ dependencies = [
  "matches",
  "port_scanner",
  "pretty_assertions",
- "rental",
  "serde",
  "serde_derive",
  "serde_json",
@@ -6543,7 +6542,6 @@ dependencies = [
  "lru",
  "petgraph 0.6.0",
  "regex",
- "rental",
  "rust-bert",
  "serde",
  "serde_derive",
@@ -6555,6 +6553,7 @@ dependencies = [
  "tremor-common",
  "tremor-influx",
  "tremor-script",
+ "tremor-value",
  "url 2.2.2",
  "value-trait",
  "window",
@@ -6574,7 +6573,7 @@ dependencies = [
  "async-std-resolver",
  "async-tls",
  "async-trait",
- "async-tungstenite 0.13.1",
+ "async-tungstenite 0.14.0",
  "base64 0.13.0",
  "beef",
  "byteorder",
@@ -6644,7 +6643,7 @@ dependencies = [
  "tremor-pipeline",
  "tremor-script",
  "tremor-value",
- "tungstenite 0.13.0",
+ "tungstenite 0.14.0",
  "url 2.2.2",
  "value-trait",
  "xz2",
@@ -6684,7 +6683,6 @@ dependencies = [
  "proptest",
  "rand 0.8.4",
  "regex",
- "rental",
  "serde",
  "serde_derive",
  "simd-json",
@@ -6809,6 +6807,25 @@ dependencies = [
  "http 0.2.4",
  "httparse",
  "input_buffer 0.4.0",
+ "log",
+ "rand 0.8.4",
+ "sha-1",
+ "thiserror",
+ "url 2.2.2",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0b2d8558abd2e276b0a8df5c05a2ec762609344191e5fd23e292c910e9165b5"
+dependencies = [
+ "base64 0.13.0",
+ "byteorder",
+ "bytes 1.0.1",
+ "http 0.2.4",
+ "httparse",
  "log",
  "rand 0.8.4",
  "sha-1",

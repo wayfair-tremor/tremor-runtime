@@ -13,47 +13,46 @@
 // limitations under the License.
 
 use crate::errors::{Error, Result};
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
 use tremor_common::file;
 
 use std::collections::HashMap;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::TryRecvError;
 
 use std::sync::mpsc;
 use std::{env, process, thread};
 
-pub(crate) fn which<P>(exe_name: P) -> Result<String>
+pub(crate) fn which<P>(exe_name: P) -> Result<PathBuf>
 where
     P: AsRef<Path>,
 {
-    let name: &Path = exe_name.as_ref();
-    let name = name.to_string_lossy();
-    let e = Error::from(format!("Unable to find suitable `{}` binary on path", name));
-    let path = env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths).find_map(|dir| {
-            let path = dir.join(&exe_name);
-            if path.is_file() {
-                Some(path)
-            } else {
-                None
-            }
-        })
-    });
-    if path.is_none() && name == "tremor" {
-        Some(env::current_exe().map_err(|e| {
-            Error::from(format!(
-                "Unable to find suitable `{}` binary on path: {}",
-                name, e
-            ))
-        })?)
+    let name = exe_name.as_ref().to_string_lossy();
+
+    // use the current binary if `tremor` is used as an executable
+    // this can be overwritten by giving it a path
+    if name == "tremor" {
+        env::current_exe()
+            .map_err(|e| Error::from(format!("Unable to execute current tremor binary: {}", e)))
     } else {
-        path
+        env::var_os("PATH")
+            .and_then(|paths| {
+                env::split_paths(&paths).find_map(|dir| {
+                    let path = dir.join(&exe_name);
+                    if path.is_file() {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .ok_or_else(|| {
+                Error::from(format!("Unable to find suitable `{}` binary on path", name))
+            })
     }
-    .and_then(|p| p.as_path().to_str().map(String::from))
-    .ok_or(e)
 }
 
 /// Read until EOF.
@@ -85,16 +84,23 @@ pub(crate) struct TargetProcess {
 }
 
 impl TargetProcess {
-    pub fn new_with_stderr(
-        cmd: &str,
+    pub fn new_with_stderr<S>(
+        cmd: S,
         args: &[String],
         env: &HashMap<String, String>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        S: AsRef<OsStr>,
+    {
         TargetProcess::new(cmd, args, env)
     }
 
     /// Spawn target process and pipe IO
-    fn new(cmd: &str, args: &[String], env: &HashMap<String, String>) -> Result<Self> {
+    fn new<S>(cmd: S, args: &[String], env: &HashMap<String, String>) -> Result<Self>
+    where
+        S: AsRef<OsStr>,
+    {
+        let cmd: &OsStr = cmd.as_ref();
         let mut target_cmd = Command::new(cmd)
             .args(args)
             .envs(env)
@@ -110,7 +116,7 @@ impl TargetProcess {
                 let (stdout_tx, stdout_rx) = mpsc::channel();
                 let (stderr_tx, stderr_rx) = mpsc::channel();
 
-                let cmd_name = cmd.to_string();
+                let cmd_name = cmd.to_string_lossy().to_string();
                 let stdout_thread = Some(thread::spawn(move || -> Result<()> {
                     // Redirect target process stdout
                     readlines_until_eof(stdout, |resp| {
@@ -119,7 +125,7 @@ impl TargetProcess {
                     })
                 }));
 
-                let cmd_name = cmd.to_string();
+                let cmd_name = cmd.to_string_lossy().to_string();
                 let stderr_thread = Some(thread::spawn(move || -> Result<()> {
                     // Redirect target process stderr
                     readlines_until_eof(stderr, |resp| {

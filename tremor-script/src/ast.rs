@@ -51,7 +51,6 @@ use halfbrown::HashMap;
 pub use query::*;
 use raw::reduce2;
 use serde::Serialize;
-use simd_json::StaticNode;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -67,7 +66,7 @@ use self::{
 
 pub(crate) type Exprs<'script> = Vec<Expr<'script>>;
 /// A list of lexical compilation units
-pub type Imports<'script> = Vec<LexicalUnit<'script>>;
+pub type Imports = Vec<LexicalUnit>;
 /// A list of immutable expressions
 pub type ImutExprs<'script> = Vec<ImutExpr<'script>>;
 pub(crate) type Fields<'script> = Vec<Field<'script>>;
@@ -283,16 +282,16 @@ impl<'script> Bytes<'script> {
 
 /// Documentation from constant
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConstDoc<'script> {
+pub struct ConstDoc {
     /// Constant name
-    pub name: Cow<'script, str>,
+    pub name: String,
     /// Constant documentation
     pub doc: Option<String>,
     /// Constant value type
     pub value_type: ValueType,
 }
 
-impl<'script> ToString for ConstDoc<'script> {
+impl ToString for ConstDoc {
     fn to_string(&self) -> String {
         format!(
             r#"
@@ -311,11 +310,11 @@ impl<'script> ToString for ConstDoc<'script> {
 
 /// Documentation from function
 #[derive(Debug, Clone, PartialEq)]
-pub struct FnDoc<'script> {
+pub struct FnDoc {
     /// Function name
-    pub name: Cow<'script, str>,
+    pub name: String,
     /// Function arguments
-    pub args: Vec<Cow<'script, str>>,
+    pub args: Vec<String>,
     /// Function documentation
     pub doc: Option<String>,
     /// Whether the function is open or not
@@ -323,32 +322,7 @@ pub struct FnDoc<'script> {
     pub open: bool,
 }
 
-/// Documentation from a module
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ModDoc<'script> {
-    /// Module name
-    pub name: Cow<'script, str>,
-    /// Module documentation
-    pub doc: Option<String>,
-}
-
-impl<'script> ModDoc<'script> {
-    /// Prints the module documentation
-    #[must_use]
-    pub fn print_with_name(&self, name: &str) -> String {
-        format!(
-            r#"
-# {}
-
-{}
-"#,
-            name,
-            &self.doc.clone().unwrap_or_default()
-        )
-    }
-}
-
-impl<'script> ToString for FnDoc<'script> {
+impl ToString for FnDoc {
     fn to_string(&self) -> String {
         format!(
             r#"
@@ -364,22 +338,84 @@ impl<'script> ToString for FnDoc<'script> {
 }
 
 /// Documentation from a module
-#[derive(Debug, Clone, PartialEq)]
-pub struct Docs<'script> {
-    /// Constants
-    pub consts: Vec<ConstDoc<'script>>,
-    /// Functions
-    pub fns: Vec<FnDoc<'script>>,
-    /// Module level documentation
-    pub module: Option<ModDoc<'script>>,
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModDoc {
+    /// Module name
+    pub name: String,
+    /// Module documentation
+    pub doc: Option<String>,
 }
 
-impl<'script> Default for Docs<'script> {
+impl ModDoc {
+    /// Prints the module documentation
+    #[must_use]
+    pub fn print_with_name(&self, name: &str) -> String {
+        format!(
+            r#"
+# {}
+
+{}
+"#,
+            name,
+            &self.doc.clone().unwrap_or_default()
+        )
+    }
+}
+
+/// Documentation from a module
+#[derive(Debug, Clone, PartialEq)]
+pub struct Docs {
+    /// Constants
+    pub consts: Vec<ConstDoc>,
+    /// Functions
+    pub fns: Vec<FnDoc>,
+    /// Module level documentation
+    pub module: Option<ModDoc>,
+}
+
+impl Default for Docs {
     fn default() -> Self {
         Self {
             consts: Vec::new(),
             fns: Vec::new(),
             module: None,
+        }
+    }
+}
+
+/// Constants and special keyword values
+pub struct RunConsts<'run, 'script>
+where
+    'script: 'run,
+{
+    names: &'run HashMap<Vec<String>, usize>,
+    values: &'run Vec<Value<'script>>,
+    /// the `args` keyword
+    pub args: &'run Value<'script>,
+    /// the `group` keyword
+    pub group: &'run Value<'script>,
+    /// the `window` keyword
+    pub window: &'run Value<'script>,
+}
+
+impl<'run, 'script> RunConsts<'run, 'script>
+where
+    'script: 'run,
+{
+    pub(crate) fn get(&self, idx: usize) -> Option<&Value<'script>> {
+        self.values.get(idx)
+    }
+
+    pub(crate) fn with_new_args<'r>(&'r self, args: &'r Value<'script>) -> RunConsts<'r, 'script>
+    where
+        'run: 'r,
+    {
+        RunConsts {
+            names: self.names,
+            values: self.values,
+            args,
+            group: self.group,
+            window: self.window,
         }
     }
 }
@@ -399,13 +435,24 @@ pub struct Consts<'script> {
 }
 
 impl<'script> Consts<'script> {
+    /// Generates runtime borrow of the costs
+    #[must_use]
+    pub fn run(&self) -> RunConsts<'_, 'script> {
+        RunConsts {
+            names: &self.names,
+            values: &self.values,
+            args: &self.args,
+            group: &self.group,
+            window: &self.window,
+        }
+    }
     pub(crate) fn new() -> Self {
         Consts {
             names: HashMap::new(),
             values: Vec::new(),
-            args: Value::Static(StaticNode::Null),
-            group: Value::Static(StaticNode::Null),
-            window: Value::Static(StaticNode::Null),
+            args: Value::const_null(),
+            group: Value::const_null(),
+            window: Value::const_null(),
         }
     }
     fn is_const(&self, id: &[String]) -> Option<&usize> {
@@ -431,7 +478,6 @@ impl<'script> Consts<'script> {
             Err,
         )
     }
-
     pub(crate) fn get(&self, idx: usize) -> Option<&Value<'script>> {
         self.values.get(idx)
     }
@@ -462,7 +508,7 @@ where
     pub(crate) functions: HashMap<Vec<String>, usize>,
     pub(crate) consts: Consts<'script>,
     pub(crate) meta: NodeMetas,
-    docs: Docs<'script>,
+    docs: Docs,
     module: Vec<String>,
     possible_leaf: bool,
     fn_argc: usize,
@@ -479,15 +525,15 @@ where
         self.consts.is_const(id)
     }
 
-    fn add_const_doc(
+    fn add_const_doc<N: ToString>(
         &mut self,
-        name: Cow<'script, str>,
+        name: &N,
         doc: Option<Vec<Cow<'script, str>>>,
         value_type: ValueType,
     ) {
         let doc = doc.map(|d| d.iter().map(|l| l.trim()).collect::<Vec<_>>().join("\n"));
         self.docs.consts.push(ConstDoc {
-            name,
+            name: name.to_string(),
             doc,
             value_type,
         })
@@ -616,7 +662,7 @@ where
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Script<'script> {
     /// Import definitions
-    pub imports: Imports<'script>,
+    pub imports: Imports,
     /// Expressions of the script
     pub exprs: Exprs<'script>,
     /// Constants defined in this script
@@ -631,7 +677,7 @@ pub struct Script<'script> {
     pub node_meta: NodeMetas,
     #[serde(skip)]
     /// Documentation from the script
-    pub docs: Docs<'script>,
+    pub docs: Docs,
 }
 
 impl<'script> Script<'script> {
@@ -660,7 +706,7 @@ impl<'script> Script<'script> {
 
         let env = Env {
             context,
-            consts: &self.consts,
+            consts: self.consts.run(),
             aggrs: &self.aggregates,
             meta: &self.node_meta,
             recursion_limit: crate::recursion_limit(),
@@ -709,7 +755,7 @@ impl<'script> Script<'script> {
 
         let env = Env {
             context,
-            consts: &self.consts,
+            consts: self.consts.run(),
             aggrs: &self.aggregates,
             meta: &self.node_meta,
             recursion_limit: crate::recursion_limit(),
@@ -748,13 +794,13 @@ impl<'script> Script<'script> {
 
 /// A lexical compilation unit
 #[derive(Debug, PartialEq, Serialize, Clone)]
-pub enum LexicalUnit<'script> {
+pub enum LexicalUnit {
     /// Import declaration with no alias
-    NakedImportDecl(Vec<raw::IdentRaw<'script>>),
+    NakedImportDecl(Vec<raw::IdentRaw<'static>>),
     /// Import declaration with an alias
-    AliasedImportDecl(Vec<raw::IdentRaw<'script>>, raw::IdentRaw<'script>),
+    AliasedImportDecl(Vec<raw::IdentRaw<'static>>, raw::IdentRaw<'static>),
     /// Line directive with embedded "<string> <num> ;"
-    LineDirective(Cow<'script, str>),
+    LineDirective(String),
 }
 // impl_expr_mid!(Ident);
 
@@ -1298,7 +1344,7 @@ impl<'script> Invoke<'script> {
             let args2: Vec<&Value<'script>> = args.iter().collect();
             let env = Env {
                 context: &EventContext::default(),
-                consts: &NO_CONSTS,
+                consts: NO_CONSTS.run(),
                 aggrs: &NO_AGGRS,
                 meta: &helper.meta,
                 recursion_limit: crate::recursion_limit(),

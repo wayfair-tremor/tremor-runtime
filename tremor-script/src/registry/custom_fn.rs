@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{FResult, FunctionError, Result};
-use crate::ast::{Consts, Expr, Exprs, FnDecl, ImutExpr, ImutExprInt, ImutExprs, InvokeAggrFn};
+use crate::ast::{Expr, Exprs, FnDecl, ImutExpr, ImutExprInt, ImutExprs, InvokeAggrFn};
 use crate::interpreter::{AggrType, Cont, Env, ExecOpts, LocalStack};
 use crate::prelude::*;
 use crate::Value;
@@ -129,8 +129,6 @@ impl<'script> CustomFn<'script> {
         })
     }
 
-    // ALLOW: https://github.com/tremor-rs/tremor-runtime/issues/1028
-    #[allow(mutable_transmutes, clippy::transmute_ptr_to_ptr)]
     pub(crate) fn invoke<'event>(
         &self,
         env: &Env<'_, 'event>,
@@ -139,21 +137,14 @@ impl<'script> CustomFn<'script> {
     where
         'script: 'event,
     {
-        use std::mem;
         const NO_AGGRS: [InvokeAggrFn<'static>; 0] = [];
 
-        let mut args_const = Value::from(
+        let args_const = Value::from(
             args.iter()
                 .skip(self.locals)
                 .map(|v| v.clone_static())
                 .collect::<Vec<Value<'static>>>(),
         );
-
-        // We are swapping out the var args for constants
-        // ALLOW: https://github.com/tremor-rs/tremor-runtime/issues/1028
-        let consts: &mut Consts<'event> = unsafe { mem::transmute(env.consts) };
-
-        mem::swap(&mut consts.args, &mut args_const);
 
         let mut this_local = LocalStack::with_size(self.locals);
         for (arg, local) in args.iter().zip(this_local.values.iter_mut()) {
@@ -163,9 +154,10 @@ impl<'script> CustomFn<'script> {
             result_needed: false,
             aggr: AggrType::Tick,
         };
+        let consts = env.consts.with_new_args(&args_const);
         let env = Env {
             context: env.context,
-            consts: env.consts,
+            consts,
             aggrs: &NO_AGGRS,
             meta: env.meta,
             recursion_limit: env.recursion_limit,
@@ -186,18 +178,14 @@ impl<'script> CustomFn<'script> {
                         &mut state,
                         &mut no_meta,
                         &mut this_local,
-                    );
-                    if r.is_err() {
-                        mem::swap(&mut consts.args, &mut args_const);
-                    };
-                    match r? {
+                    )?;
+                    match r {
                         Cont::Cont(v) => {
                             return Ok(v.into_owned());
                         }
                         Cont::Drop => {
                             recursion_depth += 1;
                             if recursion_depth == env.recursion_limit {
-                                mem::swap(&mut consts.args, &mut args_const);
                                 return Err(FunctionError::RecursionLimit);
                             }
                             // clear the local variables (that are not the
@@ -209,23 +197,18 @@ impl<'script> CustomFn<'script> {
                             continue 'recur;
                         }
                         _ => {
-                            mem::swap(&mut consts.args, &mut args_const);
                             return Err(FunctionError::Error(Box::new("can't emit here".into())));
                         }
                     };
                 }
-                let r = expr.run(
+                expr.run(
                     opts,
                     &env,
                     &mut no_event,
                     &mut state,
                     &mut no_meta,
                     &mut this_local,
-                );
-                if r.is_err() {
-                    mem::swap(&mut consts.args, &mut args_const);
-                };
-                r?;
+                )?;
             }
         }
     }

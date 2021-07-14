@@ -76,12 +76,6 @@ impl From<Error> for std::io::Error {
     }
 }
 
-impl<T> From<rental::RentalError<Error, T>> for Error {
-    fn from(e: rental::RentalError<Error, T>) -> Self {
-        e.0
-    }
-}
-
 impl<'screw_lalrpop> From<ParserError<'screw_lalrpop>> for Error {
     fn from(error: ParserError<'screw_lalrpop>) -> Self {
         match error {

@@ -73,7 +73,7 @@ pub(crate) fn run_process(
     let mut env = HashMap::with_capacity(1);
     env.insert(String::from("RUST_LOG"), String::from("info"));
 
-    let mut process = job::TargetProcess::new_with_stderr(&job::which("tremor")?, &args, &env)?;
+    let mut process = job::TargetProcess::new_with_stderr(job::which("tremor")?, &args, &env)?;
     let process_status = process.wait_with_output()?;
 
     let fg_out_file = bench_rootx.join("fg.out.log");

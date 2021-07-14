@@ -14,30 +14,14 @@
 
 // [x] PERF0001: handle select without grouping or windows easier.
 
-use crate::errors::{ErrorKind, Result};
-use crate::op::prelude::*;
-use crate::{Event, Operator};
-use tremor_script::interpreter::Env;
+use crate::{errors::Result, op::prelude::*, Event, Operator};
 use tremor_script::{
     self,
     ast::{InvokeAggrFn, Select, SelectStmt},
+    interpreter::Env,
     prelude::*,
-    query::StmtRental,
+    srs,
 };
-
-rental! {
-    pub mod rentals {
-        use std::sync::Arc;
-        use halfbrown::HashMap;
-        use super::*;
-
-        #[rental(covariant,debug)]
-        pub struct Select {
-            stmt: Arc<StmtRental>,
-            select: tremor_script::ast::SelectStmt<'stmt>,
-        }
-    }
-}
 
 /// optimized variant for a simple select of the form:
 ///
@@ -45,26 +29,14 @@ rental! {
 #[derive(Debug)]
 pub struct SimpleSelect {
     pub id: String,
-    pub select: rentals::Select,
+    pub(crate) select: srs::Select,
 }
 
 const NO_AGGRS: [InvokeAggrFn<'static>; 0] = [];
 
 impl SimpleSelect {
-    pub fn with_stmt(
-        id: String,
-        stmt_rentwrapped: &tremor_script::query::StmtRentalWrapper,
-    ) -> Result<Self> {
-        let select = rentals::Select::try_new(stmt_rentwrapped.stmt.clone(), |stmt_rentwrapped| {
-            match stmt_rentwrapped.suffix() {
-                tremor_script::ast::Stmt::Select(ref select) => Ok(select.clone()),
-                _ => Err(ErrorKind::PipelineError(
-                    "Trying to turn a non select into a select operator".into(),
-                )
-                .into()),
-            }
-        })?;
-
+    pub fn with_stmt(id: String, stmt: &srs::Stmt) -> Result<Self> {
+        let select = srs::Select::try_new_from_stmt(stmt)?;
         Ok(Self { id, select })
     }
     fn opts() -> ExecOpts {
@@ -89,7 +61,7 @@ impl Operator for SimpleSelect {
         // NOTE We are unwrapping our rental wrapped stmt
         // TODO: add soundness reasoning
 
-        self.select.rent_mut(
+        self.select.rent(
             |SelectStmt {
                  stmt,
                  locals,
@@ -98,6 +70,7 @@ impl Operator for SimpleSelect {
                  ..
              }| {
                 let local_stack = tremor_script::interpreter::LocalStack::with_size(*locals);
+
                 // TODO avoid origin_uri clone here
                 let ctx = EventContext::new(event.ingest_ns, event.origin_uri.clone());
 
@@ -108,7 +81,7 @@ impl Operator for SimpleSelect {
                     let (unwind_event, event_meta) = event.data.parts();
                     let env = Env {
                         context: &ctx,
-                        consts: &consts,
+                        consts: consts.run(),
                         aggrs: &NO_AGGRS,
                         meta: &node_meta,
                         recursion_limit: tremor_script::recursion_limit(),
@@ -131,7 +104,7 @@ impl Operator for SimpleSelect {
                     let (unwind_event, event_meta) = event.data.parts();
                     let env = Env {
                         context: &ctx,
-                        consts: &consts,
+                        consts: consts.run(),
                         aggrs: &NO_AGGRS,
                         meta: &node_meta,
                         recursion_limit: tremor_script::recursion_limit(),

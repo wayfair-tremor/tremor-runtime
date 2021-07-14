@@ -12,40 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::op::prelude::{ERR, IN, METRICS, OUT};
-use crate::op::trickle::select::WindowImpl;
 use crate::{
-    common_cow, op, ConfigGraph, NodeConfig, NodeKind, Operator, OperatorNode, PortIndexMap,
-};
-use crate::{
+    common_cow,
     errors::{Error, ErrorKind, Result},
-    Connection,
+    op::{
+        self,
+        identity::PassthroughFactory,
+        prelude::{ERR, IN, METRICS, OUT},
+        trickle::{
+            operator::TrickleOperator,
+            script::Script,
+            select::{Groups, TrickleSelect, WindowImpl},
+            simple_select::SimpleSelect,
+        },
+    },
+    ConfigGraph, Connection, NodeConfig, NodeKind, Operator, OperatorNode, PortIndexMap,
 };
 use beef::Cow;
 use halfbrown::HashMap;
 use indexmap::IndexMap;
-use op::identity::PassthroughFactory;
-use op::trickle::{
-    operator::TrickleOperator,
-    script::Trickle,
-    select::{Dims, TrickleSelect},
-    simple_select::SimpleSelect,
-};
 use petgraph::algo::is_cyclic_directed;
-// use petgraph::dot::Config;
-use std::sync::Arc;
 use tremor_common::ids::OperatorIdGen;
-use tremor_script::query::{StmtRental, StmtRentalWrapper};
-use tremor_script::{ast::Select, errors::CompilerError};
 use tremor_script::{
-    ast::{BaseExpr, CompilationUnit, Ident, NodeMetas, SelectType, Stmt, WindowDecl, WindowKind},
+    ast::{
+        BaseExpr, CompilationUnit, Ident, NodeMetas, Select, SelectType, Stmt, WindowDecl,
+        WindowKind,
+    },
     errors::{
         query_node_duplicate_name_err, query_node_reserved_name_err, query_stream_not_defined_err,
+        CompilerError,
     },
+    highlighter::{Dumb, Highlighter},
+    path::ModulePath,
+    prelude::*,
+    srs, AggrRegistry, Registry, Value,
 };
-use tremor_script::{highlighter::Dumb, path::ModulePath};
-use tremor_script::{highlighter::Highlighter, prelude::*};
-use tremor_script::{AggrRegistry, Registry, Value};
 
 const BUILTIN_NODES: [(Cow<'static, str>, NodeKind); 4] = [
     (IN, NodeKind::Input),
@@ -87,10 +88,7 @@ fn resolve_output_port(port: &(Ident, Ident), meta: &NodeMetas) -> OutputPort {
     }
 }
 
-pub(crate) fn window_decl_to_impl<'script>(
-    d: &WindowDecl<'script>,
-    qry: &Arc<tremor_script::QueryRental>,
-) -> Result<WindowImpl> {
+pub(crate) fn window_decl_to_impl(d: &WindowDecl) -> Result<WindowImpl> {
     use op::trickle::select::{TumblingWindowOnNumber, TumblingWindowOnTime};
     match &d.kind {
         WindowKind::Sliding => Err("Sliding windows are not yet implemented".into()),
@@ -115,19 +113,16 @@ pub(crate) fn window_decl_to_impl<'script>(
                 d.params.get(WindowDecl::INTERVAL).and_then(Value::as_u64),
                 d.params.get(WindowDecl::SIZE).and_then(Value::as_u64),
             ) {
-                (Some(interval), None) => TumblingWindowOnTime::from_stmt(
+                (Some(interval), None) => Ok(WindowImpl::from(TumblingWindowOnTime::from_stmt(
                     interval,
                     emit_empty_windows,
                     max_groups,
                     ttl,
                     script,
-                    qry,
-                )
-                .map(WindowImpl::from),
-                (None, Some(size)) => {
-                    TumblingWindowOnNumber::from_stmt(size, max_groups, ttl, script, qry)
-                        .map(WindowImpl::from)
-                }
+                ))),
+                (None, Some(size)) => Ok(WindowImpl::from(TumblingWindowOnNumber::from_stmt(
+                    size, max_groups, ttl, script,
+                ))),
                 (Some(_), Some(_)) => Err(Error::from(
                     "Bad window configuration, only one of `size` or `interval` is allowed.",
                 )),
@@ -211,7 +206,7 @@ impl Query {
 
         for (name, node_kind) in &BUILTIN_NODES {
             let id = pipe_graph.add_node(NodeConfig {
-                id: name.clone(),
+                id: name.to_string(),
                 kind: node_kind.clone(),
                 op_type: "passthrough".to_string(),
                 ..NodeConfig::default()
@@ -246,16 +241,9 @@ impl Query {
 
         let has_builtin_node_name = make_builtin_node_name_checker();
 
-        for (i, stmt) in query.stmts.iter().enumerate() {
-            let stmt_rental =
-            // ALLOW: we do this based on the index above so we know i exists
-                StmtRental::new(Arc::new(self.0.clone()), |q| q.suffix().stmts[i].clone());
-
-            let that = StmtRentalWrapper {
-                stmt: Arc::new(stmt_rental),
-            };
-
-            match stmt {
+        let stmts = self.0.extract_stmts();
+        for (i, stmt) in stmts.into_iter().enumerate() {
+            match stmt.suffix() {
                 Stmt::Select(ref select) => {
                     let s: &Select<'_> = &select.stmt;
 
@@ -294,7 +282,7 @@ impl Query {
                         from.id = name.clone();
                         if !nodes.contains_key(&name) {
                             let id = pipe_graph.add_node(NodeConfig {
-                                id: name.clone(),
+                                id: name.to_string(),
                                 kind: NodeKind::Input,
                                 op_type: "passthrough".to_string(),
                                 ..NodeConfig::default()
@@ -323,7 +311,7 @@ impl Query {
                         into.id = name.clone();
                         if !nodes.contains_key(&name) {
                             let id = pipe_graph.add_node(NodeConfig {
-                                id: name.clone(),
+                                id: name.to_string(),
                                 label: Some(name.to_string()),
                                 kind: NodeKind::Output(into.port.clone()),
                                 op_type: "passthrough".to_string(),
@@ -353,7 +341,7 @@ impl Query {
                     links.entry(select_out).or_default().push(into);
 
                     let node = NodeConfig {
-                        id: select_in.id.clone(),
+                        id: select_in.id.to_string(),
                         label,
                         kind: NodeKind::Select,
                         op_type: "trickle::select".to_string(),
@@ -363,13 +351,13 @@ impl Query {
 
                     let mut ww = HashMap::with_capacity(query.windows.len());
                     for (name, decl) in &query.windows {
-                        ww.insert(name.clone(), window_decl_to_impl(&decl, &self.0.query)?);
+                        ww.insert(name.clone(), window_decl_to_impl(&decl)?);
                     }
                     let op = node.to_op(
                         idgen.next_id(),
                         supported_operators,
                         None,
-                        Some(that),
+                        Some(&stmt),
                         Some(ww),
                     )?;
                     pipe_ops.insert(id, op);
@@ -381,7 +369,7 @@ impl Query {
                     let id = name.clone();
                     if !nodes.contains_key(&id) {
                         let node = NodeConfig {
-                            id,
+                            id: id.to_string(),
                             kind: NodeKind::Operator,
                             op_type: "passthrough".to_string(),
                             ..NodeConfig::default()
@@ -392,7 +380,7 @@ impl Query {
                             idgen.next_id(),
                             supported_operators,
                             None,
-                            Some(that),
+                            Some(&stmt),
                             Some(HashMap::new()),
                         )?;
                         inputs.insert(name.clone(), id);
@@ -419,43 +407,44 @@ impl Query {
                     };
 
                     let node = NodeConfig {
-                        id: common_cow(&o.id),
+                        id: o.id.to_string(),
                         kind: NodeKind::Operator,
                         op_type: "trickle::operator".to_string(),
                         ..NodeConfig::default()
                     };
                     let id = pipe_graph.add_node(node.clone());
 
-                    let stmt_rental = StmtRental::try_new(Arc::new(self.0.clone()), |query| {
-                        let q = query.suffix();
-                        let mut decl = q
-                            .operators
-                            .get(&fqon)
-                            .ok_or_else(|| Error::from("operator not found"))?
-                            .clone();
-                        if let Some(Stmt::Operator(o)) = q.stmts.get(i) {
-                            if let Some(params) = &o.params {
-                                if let Some(decl_params) = decl.params.as_mut() {
-                                    for (k, v) in params {
-                                        decl_params.insert(k.clone(), v.clone());
+                    let stmt_srs =
+                        srs::Stmt::try_new_from_query::<&'static str, _>(&self.0.query, |query| {
+                            let mut decl = query
+                                .operators
+                                .get(&fqon)
+                                .ok_or("operator not found")?
+                                .clone();
+                            if let Some(Stmt::Operator(o)) = query.stmts.get(i) {
+                                if let Some(params) = &o.params {
+                                    if let Some(decl_params) = decl.params.as_mut() {
+                                        for (k, v) in params {
+                                            decl_params.insert(k.clone(), v.clone());
+                                        }
+                                    } else {
+                                        decl.params = Some(params.clone());
                                     }
-                                } else {
-                                    decl.params = Some(params.clone());
                                 }
-                            }
-                        };
-                        let inner_stmt = Stmt::OperatorDecl(decl);
-                        // This is sound since self.0 includes an ARC of the data we
-                        // so we hold on to any referenced data by including a clone
-                        // of that arc inthe rental source.
-                        Ok(inner_stmt)
-                    })?;
+                            };
+                            let inner_stmt = Stmt::OperatorDecl(decl);
 
-                    let that = StmtRentalWrapper {
-                        stmt: std::sync::Arc::new(stmt_rental),
-                    };
-                    let op =
-                        node.to_op(idgen.next_id(), supported_operators, None, Some(that), None)?;
+                            Ok(inner_stmt)
+                        })?;
+
+                    let that = stmt_srs;
+                    let op = node.to_op(
+                        idgen.next_id(),
+                        supported_operators,
+                        None,
+                        Some(&that),
+                        None,
+                    )?;
                     pipe_ops.insert(id, op);
                     nodes.insert(common_cow(&o.id), id);
                     outputs.push(id);
@@ -477,21 +466,14 @@ impl Query {
                         format!("{}::{}", o.module.join("::"), target)
                     };
 
-                    let stmt_rental = StmtRental::try_new(Arc::new(self.0.clone()), |query| {
-                        let decl = query
-                            .suffix()
-                            .scripts
-                            .get(&fqsn)
-                            .ok_or_else(|| Error::from("script not found"))?
-                            .clone();
-                        let inner_stmt = Stmt::ScriptDecl(Box::new(decl));
-                        // This is sound since self.0 includes an ARC of the data we
-                        // so we hold on to any referenced data by including a clone
-                        // of that arc inthe rental source.
-                        Ok(inner_stmt)
-                    })?;
+                    let stmt_srs =
+                        srs::Stmt::try_new_from_query::<&'static str, _>(&self.0.query, |query| {
+                            let decl = query.scripts.get(&fqsn).ok_or("script not found")?.clone();
+                            let inner_stmt = Stmt::ScriptDecl(Box::new(decl));
+                            Ok(inner_stmt)
+                        })?;
 
-                    let label = if let Stmt::ScriptDecl(s) = stmt_rental.suffix() {
+                    let label = if let Stmt::ScriptDecl(s) = stmt_srs.suffix() {
                         let e = s.extent(&query.node_meta);
                         let mut h = Dumb::new();
                         // We're trimming the code so no spaces are at the end then adding a newline
@@ -503,17 +485,15 @@ impl Query {
                         None
                     };
 
-                    let that_defn = StmtRentalWrapper {
-                        stmt: std::sync::Arc::new(stmt_rental),
-                    };
+                    let that_defn = stmt_srs;
 
                     let node = NodeConfig {
-                        id: common_cow(&o.id),
+                        id: o.id.to_string(),
                         kind: NodeKind::Script,
                         label,
                         op_type: "trickle::script".to_string(),
-                        defn: Some(std::sync::Arc::new(that_defn.clone())),
-                        node: Some(std::sync::Arc::new(that.clone())),
+                        defn: Some(that_defn.clone()),
+                        node: Some(stmt.clone()),
                         ..NodeConfig::default()
                     };
 
@@ -521,8 +501,8 @@ impl Query {
                     let op = node.to_op(
                         idgen.next_id(),
                         supported_operators,
-                        Some(that_defn),
-                        Some(that),
+                        Some(&that_defn),
+                        Some(&stmt),
                         None,
                     )?;
                     pipe_ops.insert(id, op);
@@ -678,13 +658,13 @@ impl Query {
 fn select(
     operator_uid: u64,
     config: &NodeConfig,
-    node: Option<StmtRentalWrapper>,
+    node: Option<&srs::Stmt>,
     windows: Option<HashMap<String, WindowImpl>>,
 ) -> Result<Box<dyn Operator>> {
     let node = node.ok_or_else(|| {
         ErrorKind::MissingOpConfig("trickle operators require a statement".into())
     })?;
-    let select_type = match node.stmt.suffix() {
+    let select_type = match node.suffix() {
         tremor_script::ast::Stmt::Select(ref select) => select.complexity(),
         _ => {
             return Err(ErrorKind::PipelineError(
@@ -698,17 +678,14 @@ fn select(
             let op = PassthroughFactory::new_boxed();
             op.from_node(operator_uid, config)
         }
-        SelectType::Simple => Ok(Box::new(SimpleSelect::with_stmt(
-            config.id.clone().to_string(),
-            &node,
-        )?)),
+        SelectType::Simple => Ok(Box::new(SimpleSelect::with_stmt(config.id.clone(), &node)?)),
         SelectType::Normal => {
-            let groups = Dims::new(node.stmt.clone());
+            let groups = Groups::new();
             let windows = windows.ok_or_else(|| {
                 ErrorKind::MissingOpConfig("select operators require a window mapping".into())
             })?;
             let windows: Result<Vec<(String, WindowImpl)>> =
-                if let tremor_script::ast::Stmt::Select(s) = node.stmt.suffix() {
+                if let tremor_script::ast::Stmt::Select(s) = node.suffix() {
                     s.stmt
                         .windows
                         .iter()
@@ -728,7 +705,7 @@ fn select(
 
             Ok(Box::new(TrickleSelect::with_stmt(
                 operator_uid,
-                config.id.clone().to_string(),
+                config.id.clone(),
                 &groups,
                 windows?,
                 &node,
@@ -740,28 +717,28 @@ fn select(
 fn operator(
     operator_uid: u64,
     config: &NodeConfig,
-    node: Option<StmtRentalWrapper>,
+    node: Option<&srs::Stmt>,
 ) -> Result<Box<dyn Operator>> {
     let node = node.ok_or_else(|| {
         ErrorKind::MissingOpConfig("trickle operators require a statement".into())
     })?;
     Ok(Box::new(TrickleOperator::with_stmt(
         operator_uid,
-        config.id.clone().to_string(),
+        config.id.clone(),
         node,
     )?))
 }
 
 fn script(
     config: &NodeConfig,
-    defn: Option<StmtRentalWrapper>,
-    node: Option<StmtRentalWrapper>,
+    defn: Option<&srs::Stmt>,
+    node: Option<&srs::Stmt>,
 ) -> Result<Box<dyn Operator>> {
     let node = node.ok_or_else(|| {
         ErrorKind::MissingOpConfig("trickle operators require a statement".into())
     })?;
-    Ok(Box::new(Trickle::with_stmt(
-        config.id.clone().to_string(),
+    Ok(Box::new(Script::with_stmt(
+        config.id.clone(),
         defn.ok_or_else(|| Error::from("Script definition missing"))?,
         node,
     )?))
@@ -769,8 +746,8 @@ fn script(
 pub(crate) fn supported_operators(
     config: &NodeConfig,
     uid: u64,
-    defn: Option<StmtRentalWrapper>,
-    node: Option<StmtRentalWrapper>,
+    defn: Option<&srs::Stmt>,
+    node: Option<&srs::Stmt>,
     windows: Option<HashMap<String, WindowImpl>>,
 ) -> Result<OperatorNode> {
     let name_parts: Vec<&str> = config.op_type.split("::").collect();
@@ -783,7 +760,7 @@ pub(crate) fn supported_operators(
     };
     Ok(OperatorNode {
         uid,
-        id: config.id.clone(),
+        id: config.id.to_string(),
         kind: config.kind.clone(),
         op_type: config.op_type.clone(),
         op,

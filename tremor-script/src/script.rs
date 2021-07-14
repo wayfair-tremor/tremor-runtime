@@ -12,17 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::ast::{Docs, Helper, Warning, Warnings};
-use crate::ctx::EventContext;
-use crate::errors::{CompilerError, Error, Result};
-use crate::highlighter::{Dumb as DumbHighlighter, Highlighter};
 pub use crate::interpreter::AggrType;
-use crate::lexer;
-use crate::parser::g as grammar;
-use crate::path::ModulePath;
-use crate::pos::Range;
-use crate::registry::{Aggr as AggrRegistry, Registry};
-use crate::Value;
+use crate::{
+    ast::{Docs, Helper, Warning, Warnings},
+    ctx::EventContext,
+    errors::{CompilerError, Error, Result},
+    highlighter::{Dumb as DumbHighlighter, Highlighter},
+    lexer,
+    parser::g as grammar,
+    path::ModulePath,
+    pos::Range,
+    registry::{Aggr as AggrRegistry, Registry},
+    srs, Value,
+};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -52,7 +54,7 @@ pub enum Return<'event> {
 pub struct Script {
     // TODO: This should probably be pulled out to allow people wrapping it themselves
     /// Rental for the runnable script
-    pub script: rentals::Script,
+    pub script: srs::Script,
     /// Source code for this script
     pub source: String,
     /// A set of warnings if any
@@ -64,28 +66,6 @@ impl Script {
     pub fn warnings(&self) -> impl Iterator<Item = &Warning> {
         self.warnings.iter()
     }
-}
-
-rental! {
-    #[allow(missing_docs)]
-    /// Rental for the script/interpreter for tremor-script
-    pub mod rentals {
-        use crate::ast;
-        use std::borrow::Cow;
-        use serde::Serialize;
-        use std::sync::Arc;
-        use std::marker::Send;
-
-        /// Script rental
-        #[rental_mut(covariant,debug)]
-        pub struct Script{
-            script: Box<String>, // Fake
-            parsed: ast::Script<'script>
-        }
-    }
-}
-
-impl Script {
     /// Parses a string and turns it into a script
     ///
     /// # Errors
@@ -102,28 +82,27 @@ impl Script {
         let r = |include_stack: &mut lexer::IncludeStack| -> Result<Self> {
             let mut warnings = Warnings::new();
 
-            let rented_script =
-                rentals::Script::try_new(Box::new(script.clone()), |script: &mut String| {
-                    let cu = include_stack.push(file_name)?;
-                    let lexemes: Vec<_> = lexer::Preprocessor::preprocess(
-                        module_path,
-                        file_name,
-                        script,
-                        cu,
-                        include_stack,
-                    )?;
-                    let filtered_tokens = lexemes
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .filter(|t| !t.value.is_ignorable());
+            let rented_script = srs::Script::try_new::<Error, _>(script.clone(), |script| {
+                let cu = include_stack.push(file_name)?;
+                let lexemes: Vec<_> = lexer::Preprocessor::preprocess(
+                    module_path,
+                    file_name,
+                    script,
+                    cu,
+                    include_stack,
+                )?;
+                let filtered_tokens = lexemes
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|t| !t.value.is_ignorable());
 
-                    let script_raw = grammar::ScriptParser::new().parse(filtered_tokens)?;
-                    let fake_aggr_reg = AggrRegistry::default();
-                    let mut helper = Helper::new(&reg, &fake_aggr_reg, include_stack.cus.clone());
-                    let screw_rust = script_raw.up_script(&mut helper)?;
-                    std::mem::swap(&mut warnings, &mut helper.warnings);
-                    Ok(screw_rust)
-                })?;
+                let script_raw = grammar::ScriptParser::new().parse(filtered_tokens)?;
+                let fake_aggr_reg = AggrRegistry::default();
+                let mut helper = Helper::new(&reg, &fake_aggr_reg, include_stack.cus.clone());
+                let screw_rust = script_raw.up_script(&mut helper)?;
+                std::mem::swap(&mut warnings, &mut helper.warnings);
+                Ok(screw_rust)
+            })?;
 
             Ok(Self {
                 script: rented_script,
@@ -139,7 +118,7 @@ impl Script {
 
     /// Returns the documentation for the script
     #[must_use]
-    pub fn docs(&self) -> &Docs<'_> {
+    pub fn docs(&self) -> &Docs {
         &self.script.suffix().docs
     }
 

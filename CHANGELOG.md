@@ -9,7 +9,13 @@
 - Add `zstd` pre- and post-processors [#1100](https://github.com/tremor-rs/tremor-runtime/issues/1100)
 - Remove `rental` from `Event` [#1031](https://github.com/tremor-rs/tremor-runtime/issues/1031) [#1037](https://github.com/tremor-rs/tremor-runtime/issues/1037)
 - Put event raw payload into `Arc` to improve cloning perf
+- Remove `rental` from the entire runtime [#1037](https://github.com/tremor-rs/tremor-runtime/issues/1037)
+- Restructure operators and select to avoid transmutation [#1024](https://github.com/tremor-rs/tremor-runtime/issues/1024)
+- Fix tremor-cli to use it's own binary when possible [#1096](https://github.com/tremor-rs/tremor-runtime/issues/1096)
+- Restructure functions to avoid transmutation [#1028](https://github.com/tremor-rs/tremor-runtime/issues/1028)
+- Update blackhole to print events / s [#1129](https://github.com/tremor-rs/tremor-runtime/issues/1129)
 - Allow gcp headers to be included in `rest` offramp with `auth: gcp`
+
 ### Fixes
 
 - Skip instead of fail EQC on out of repo PRs
@@ -18,6 +24,7 @@
 - Fix `heredoc_start` and `heredoc_end` showing up in error messages instead of `"""`
 - Fix some errors in otel pb <-> json translation
 - Fix windowed queries emitting events with `null` metadata on tick
+- Fix sorting for artefacts
 
 ## 0.11.4
 

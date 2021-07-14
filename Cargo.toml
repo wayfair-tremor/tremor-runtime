@@ -36,7 +36,7 @@ async-compression = { version="0.3", features=["xz", "futures-bufread", "stream"
 async-std = { version="1.9.0", features=["unstable", "attributes", "tokio03", "tokio1"] }
 async-std-resolver = "0.20"
 async-trait = "0.1"
-async-tungstenite = { version="0.13.1", features=["async-std-runtime"] }
+async-tungstenite = { version="0.14.0", features=["async-std-runtime"] }
 base64 = "0.13"
 beef = { version="0.5", features=["impl_serde"] }
 byteorder = "1"
@@ -71,7 +71,7 @@ simd-json = { version="0.4", features=["known-key"] }
 simd-json-derive = "0.2"
 snap = "1"
 surf = "=2.2.0"
-syslog_loose = "0.10"
+syslog_loose = "0.14"
 tremor-common = { path="tremor-common" }
 tremor-influx = { path="tremor-influx" }
 tremor-pipeline = { path="tremor-pipeline" }
@@ -81,8 +81,8 @@ url = "2.2"
 value-trait = "0.2"
 zstd = "0.9"
 
-rustls = "0.19"
 async-tls = "0.11"
+rustls = "0.19"
 
 mapr = "0.8"
 tempfile = { version="3.2" }
@@ -145,7 +145,7 @@ reqwest = "0.11.4"
 
 [dependencies.tungstenite]
 default-features = false
-version = "0.13"
+version = "0.14"
 
 [dev-dependencies]
 matches = "0.1"

@@ -34,11 +34,6 @@ impl From<sled::transaction::TransactionError<()>> for Error {
         Self::from(format!("Sled Transaction Error: {:?}", e))
     }
 }
-impl<T> From<rental::RentalError<Error, T>> for Error {
-    fn from(e: rental::RentalError<Error, T>) -> Self {
-        e.0
-    }
-}
 
 error_chain! {
     links {

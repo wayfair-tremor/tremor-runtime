@@ -130,7 +130,7 @@ impl Bucket {
 }
 
 pub struct Grouper {
-    pub _id: Cow<'static, str>,
+    pub _id: String,
     pub buckets: HashMap<String, Bucket>,
 }
 

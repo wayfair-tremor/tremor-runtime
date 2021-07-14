@@ -13,14 +13,181 @@
 // limitations under the License.
 
 use super::prelude::*;
-use chrono::{Datelike, Offset, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Offset, TimeZone, Utc};
 use syslog_loose::{IncompleteDate, ProcId, Protocol, SyslogFacility, SyslogSeverity};
-use tremor_script::{Object, Value};
+use tremor_value::Value;
+
+const DEFAULT_PRI: i32 = 13;
+
+pub trait Now: Send + Sync + Clone {
+    fn now(&self) -> DateTime<Utc>;
+}
 
 #[derive(Clone)]
-pub struct Syslog {}
+pub struct UtcNow {}
+impl Now for UtcNow {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+}
 
-impl Codec for Syslog {
+#[derive(Clone)]
+pub struct Syslog<N>
+where
+    N: Now,
+{
+    now: N,
+}
+
+impl Syslog<UtcNow> {
+    /// construct a Syslog codec
+    /// that adds the current time in UTC during encoding if none was provided in the event payload
+    pub fn utcnow() -> Self {
+        Self { now: UtcNow {} }
+    }
+}
+
+impl<N> Syslog<N>
+where
+    N: Now,
+{
+    /// encode structured data `sd` into `result`
+    fn encode_sd(sd: &Value, result: &mut Vec<String>) -> Result<()> {
+        let sd = sd.as_object().ok_or_else(|| {
+            Error::from(ErrorKind::InvalidSyslogData(
+                "Invalid structured data: structured data not an object",
+            ))
+        })?;
+        let mut elem = String::with_capacity(16);
+        for (id, params) in sd.iter() {
+            elem.push('[');
+            elem.push_str(&id.to_string());
+            let params = params.as_array().ok_or_else(|| {
+                Error::from(ErrorKind::InvalidSyslogData(
+                    "Invalid structured data: params not an array of objects",
+                ))
+            })?;
+            for key_value in params.iter() {
+                let kv_map = key_value.as_object().ok_or_else(|| {
+                    Error::from(ErrorKind::InvalidSyslogData(
+                        "Invalid structured data: param's key value pair not an object",
+                    ))
+                })?;
+                for (k, v) in kv_map {
+                    let value = v.as_str().ok_or_else(|| {
+                        Error::from(ErrorKind::InvalidSyslogData(
+                            "Invalid structured data: param's key value pair not an object",
+                        ))
+                    })?;
+                    elem.push(' ');
+                    elem.push_str(&k.to_string());
+                    elem.push('=');
+                    elem.push('"');
+                    elem.push_str(value);
+                    elem.push('"');
+                }
+            }
+            elem.push(']');
+        }
+        result.push(elem);
+
+        Ok(())
+    }
+
+    fn encode_rfc3164(&self, data: &Value) -> Result<Vec<String>> {
+        let mut result = Vec::with_capacity(4);
+        let f = data.get_str("facility");
+        let s = data.get_str("severity");
+
+        let pri = match f.zip(s) {
+            Some((f, s)) => compose_pri(to_facility(f)?, to_severity(s)?),
+            None => DEFAULT_PRI, // https://datatracker.ietf.org/doc/html/rfc3164#section-4.3.3
+        };
+        let datetime = data
+            .get_i64("timestamp")
+            .map_or_else(|| self.now.now(), |t| Utc.timestamp_nanos(t));
+        result.push(format!("<{}>{}", pri, datetime.format("%b %e %H:%M:%S")));
+
+        result.push(
+            data.get_str("hostname")
+                .map_or_else(Self::nil, ToOwned::to_owned),
+        );
+        result.push(data.get_str("appname").map_or_else(
+            || String::from(":"),
+            |appname| {
+                data.get_str("procid").map_or_else(
+                    || format!("{}:", appname),
+                    |procid| format!("{}[{}]:", appname, procid),
+                )
+            },
+        ));
+
+        // structured data shouldnt pop up in this format, but syslog_loose parses it anyways
+        if let Some(sd) = data.get("structured_data") {
+            Self::encode_sd(sd, &mut result)?;
+        }
+        if let Some(msg) = data.get_str("msg") {
+            result.push(msg.to_owned());
+        }
+        Ok(result)
+    }
+
+    fn nil() -> String {
+        String::from("-")
+    }
+
+    fn encode_rfc5424(data: &Value, version: u32) -> Result<Vec<String>> {
+        let mut result = Vec::with_capacity(10); // reserving 3 slots for structured data
+        let f = data
+            .get_str("facility")
+            .ok_or_else(|| Error::from(ErrorKind::InvalidSyslogData("facility missing")))?;
+        let s = data
+            .get_str("severity")
+            .ok_or_else(|| Error::from(ErrorKind::InvalidSyslogData("severity missing")))?;
+        result.push(format!(
+            "<{}>{}",
+            compose_pri(to_facility(f)?, to_severity(s)?),
+            version
+        ));
+
+        result.push(data.get_i64("timestamp").map_or_else(Self::nil, |t| {
+            let datetime = Utc.timestamp_nanos(t);
+            datetime.to_rfc3339()
+        }));
+
+        result.push(
+            data.get_str("hostname")
+                .map_or_else(Self::nil, ToOwned::to_owned),
+        );
+        result.push(
+            data.get_str("appname")
+                .map_or_else(Self::nil, ToOwned::to_owned),
+        );
+        result.push(
+            data.get_str("procid")
+                .map_or_else(Self::nil, ToOwned::to_owned),
+        );
+        result.push(
+            data.get_str("msgid")
+                .map_or_else(Self::nil, ToOwned::to_owned),
+        );
+        if let Some(sd) = data.get("structured_data") {
+            Self::encode_sd(sd, &mut result)?;
+        } else {
+            result.push(Self::nil());
+        }
+
+        if let Some(msg) = data.get_str("msg") {
+            result.push(msg.to_owned());
+        }
+        Ok(result)
+    }
+}
+
+impl<N> Codec for Syslog<N>
+where
+    N: Now + 'static,
+{
     #[cfg(not(tarpaulin_include))]
     fn name(&self) -> &str {
         "syslog"
@@ -38,51 +205,48 @@ impl Codec for Syslog {
             Some(chrono::offset::Utc.fix()),
         );
 
-        let mut es_msg = Object::with_capacity(11);
-        es_msg.insert("hostname".into(), Value::from(parsed.hostname));
-        es_msg.insert(
-            "severity".into(),
-            Value::from(parsed.severity.map(syslog_loose::SyslogSeverity::as_str)),
-        );
-        es_msg.insert(
-            "facility".into(),
-            Value::from(parsed.facility.map(syslog_loose::SyslogFacility::as_str)),
-        );
-        es_msg.insert(
-            "timestamp".into(),
-            Value::from(parsed.timestamp.map(|x| x.timestamp_nanos())),
-        );
-        es_msg.insert(
-            "protocol".into(),
-            Value::from(match parsed.protocol {
+        let mut decoded = Value::object_with_capacity(11);
+        if let Some(hostname) = parsed.hostname {
+            decoded.try_insert("hostname", hostname);
+        }
+        if let Some(severity) = parsed.severity {
+            decoded.try_insert("severity", severity.as_str());
+        }
+        if let Some(facility) = parsed.facility {
+            decoded.try_insert("facility", facility.as_str());
+        }
+        if let Some(timestamp) = parsed.timestamp {
+            decoded.try_insert("timestamp", timestamp.timestamp_nanos());
+        }
+        decoded.try_insert(
+            "protocol",
+            match parsed.protocol {
                 Protocol::RFC3164 => "RFC3164",
                 Protocol::RFC5424(_) => "RFC5424",
-            }),
-        );
-        es_msg.insert(
-            "protocol_version".into(),
-            match parsed.protocol {
-                Protocol::RFC5424(version) => Value::from(version),
-                Protocol::RFC3164 => Value::null(),
             },
         );
-        es_msg.insert("appname".into(), Value::from(parsed.appname));
-        es_msg.insert("msgid".into(), Value::from(parsed.msgid));
-
-        let mut temp = Object::with_capacity(parsed.structured_data.len());
-        for element in parsed.structured_data {
-            let mut e = Vec::with_capacity(element.params.len());
-            for (name, value) in element.params {
-                let mut param = Value::object_with_capacity(1);
-                param.insert(name.to_owned(), Value::from(value))?;
-                e.push(param);
-            }
-            temp.insert(element.id.into(), Value::from(e));
+        if let Protocol::RFC5424(version) = parsed.protocol {
+            decoded.try_insert("protocol_version", version);
         }
-        if temp.is_empty() {
-            es_msg.insert("structured_data".into(), Value::null());
-        } else {
-            es_msg.insert("structured_data".into(), Value::from(temp));
+        if let Some(appname) = parsed.appname {
+            decoded.try_insert("appname", appname);
+        }
+        if let Some(msgid) = parsed.msgid {
+            decoded.try_insert("msgid", msgid);
+        }
+
+        if !parsed.structured_data.is_empty() {
+            let mut temp = Value::object_with_capacity(parsed.structured_data.len());
+            for element in parsed.structured_data {
+                let mut e = Vec::with_capacity(element.params.len());
+                for (name, value) in element.params {
+                    let mut param = Value::object_with_capacity(1);
+                    param.try_insert(name, value);
+                    e.push(param);
+                }
+                temp.try_insert(element.id, Value::from(e));
+            }
+            decoded.try_insert("structured_data", temp);
         }
 
         if let Some(procid) = parsed.procid {
@@ -90,27 +254,20 @@ impl Codec for Syslog {
                 ProcId::PID(pid) => pid.to_string().into(),
                 ProcId::Name(name) => name.to_string().into(),
             };
-            es_msg.insert("procid".into(), value);
-        } else {
-            es_msg.insert("procid".into(), Value::null());
+            decoded.try_insert("procid", value);
+        }
+        if !parsed.msg.is_empty() {
+            decoded.try_insert("msg", Value::from(parsed.msg));
         }
 
-        es_msg.insert("msg".into(), Value::from(parsed.msg));
-
-        Ok(Some(Value::from(es_msg)))
+        Ok(Some(decoded))
     }
 
     #[allow(clippy::too_many_lines)]
     fn encode(&self, data: &Value) -> Result<Vec<u8>> {
-        let mut result: Vec<String> = Vec::new();
-
-        let mut v = String::new();
         let protocol = match (data.get_str("protocol"), data.get_u32("protocol_version")) {
             (Some("RFC3164"), _) => Protocol::RFC3164,
-            (Some("RFC5424"), Some(version)) => {
-                v = version.to_owned().to_string();
-                Protocol::RFC5424(version)
-            }
+            (Some("RFC5424"), Some(version)) => Protocol::RFC5424(version),
             (Some("RFC5424"), None) => {
                 return Err(ErrorKind::InvalidSyslogData("Missing protocol version").into())
             }
@@ -120,122 +277,12 @@ impl Codec for Syslog {
             (Some(&_), _) => {
                 return Err(ErrorKind::InvalidSyslogData("invalid protocol type").into())
             }
-            (None, None) => {
-                v = "1".to_owned();
-                Protocol::RFC5424(1_u32)
-            }
+            (None, None) => Protocol::RFC5424(1_u32),
         };
-
-        let f = data
-            .get_str("facility")
-            .ok_or_else(|| Error::from(ErrorKind::InvalidSyslogData("facility missing")))?;
-        let s = data
-            .get_str("severity")
-            .ok_or_else(|| Error::from(ErrorKind::InvalidSyslogData("severity missing")))?;
-        result.push(format!(
-            "<{}>{}",
-            compose_pri(to_facility(f)?, to_severity(s)?),
-            v
-        ));
-
-        if let Some(t) = data.get_i64("timestamp") {
-            let datetime = Utc.timestamp_nanos(t);
-            let timestamp_str = datetime.to_rfc3339();
-            result.push(timestamp_str);
-        } else {
-            result.push(String::from("-"));
-        }
-
-        if let Some(h) = data.get_str("hostname") {
-            result.push(h.to_owned());
-        } else {
-            result.push(String::from("-"));
-        }
-
-        match protocol {
-            Protocol::RFC3164 => {
-                if let Some(appname) = data.get_str("appname") {
-                    if let Some(procid) = data.get_str("procid") {
-                        result.push(format!("{}[{}]:", appname, procid));
-                    } else {
-                        result.push(format!("{}:", appname));
-                    }
-                } else {
-                    result.push(String::from(":"));
-                }
-            }
-            Protocol::RFC5424(_) => {
-                if let Some(appname) = data.get_str("appname") {
-                    result.push(appname.to_owned());
-                } else {
-                    result.push(String::from("-"));
-                }
-                if let Some(procid) = data.get_str("procid") {
-                    result.push(procid.to_owned());
-                } else {
-                    result.push(String::from("-"));
-                }
-                if let Some(msgid) = data.get_str("msgid") {
-                    result.push(msgid.to_owned());
-                } else {
-                    result.push(String::from("-"));
-                }
-            }
-        }
-
-        if let Some(o) = data.get("structured_data") {
-            if let Some(sd) = o.as_object() {
-                let mut elem = String::new();
-                for (id, params) in sd.iter() {
-                    elem.push('[');
-                    elem.push_str(&id.to_string());
-                    if let Some(v) = params.as_array() {
-                        for key_value in v.iter() {
-                            if let Some(o) = key_value.as_object() {
-                                for (k, v) in o {
-                                    if let Some(v) = v.as_str() {
-                                        elem.push(' ');
-                                        elem.push_str(&k.to_string());
-                                        elem.push('=');
-                                        elem.push('"');
-                                        elem.push_str(v);
-                                        elem.push('"');
-                                    } else {
-                                        return Err(ErrorKind::InvalidSyslogData(
-                                            "Invalid structured data: param value not a string",
-                                        )
-                                        .into());
-                                    }
-                                }
-                            } else {
-                                return Err(ErrorKind::InvalidSyslogData(
-                                    "Invalid structured data: param's key value pair not an object",
-                                )
-                                .into());
-                            }
-                        }
-                    } else {
-                        return Err(ErrorKind::InvalidSyslogData(
-                            "Invalid structured data: params not an array of objects",
-                        )
-                        .into());
-                    }
-                    elem.push(']');
-                }
-                result.push(elem);
-            } else {
-                return Err(ErrorKind::InvalidSyslogData(
-                    "Invalid structured data: structured data not an object",
-                )
-                .into());
-            }
-        } else if let Protocol::RFC5424(_) = protocol {
-            result.push(String::from("-"));
-        }
-
-        if let Some(msg) = data.get_str("msg") {
-            result.push(msg.to_owned());
-        }
+        let result = match protocol {
+            Protocol::RFC3164 => self.encode_rfc3164(data)?,
+            Protocol::RFC5424(version) => Self::encode_rfc5424(data, version)?,
+        };
 
         Ok(result.join(" ").as_bytes().to_vec())
     }
@@ -312,12 +359,26 @@ fn compose_pri(facility: SyslogFacility, severity: SyslogSeverity) -> i32 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_case::test_case;
+    use tremor_value::literal;
+
+    #[derive(Clone)]
+    struct TestNow {}
+    impl Now for TestNow {
+        fn now(&self) -> DateTime<Utc> {
+            Utc.ymd(1970, 01, 01).and_hms(0, 0, 0)
+        }
+    }
+
+    fn test_codec() -> Syslog<TestNow> {
+        Syslog { now: TestNow {} }
+    }
 
     #[test]
     fn test_syslog_codec() -> Result<()> {
         let mut s = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource= \"Application\" eventID=\"1011\"][examplePriority@32473 class=\"high\"] BOMAn application event log entry...".to_vec();
 
-        let mut codec = Syslog {};
+        let mut codec = test_codec();
         let decoded = codec.decode(s.as_mut_slice(), 0)?.unwrap();
         let mut a = codec.encode(&decoded)?;
         let b = codec.decode(a.as_mut_slice(), 0)?.unwrap();
@@ -328,21 +389,16 @@ mod test {
     #[test]
     fn test_decode_empty() -> Result<()> {
         let mut s = b"<191>1 2021-03-18T20:30:00.123Z - - - - - message".to_vec();
-        let mut codec = Syslog {};
+        let mut codec = test_codec();
         let decoded = codec.decode(s.as_mut_slice(), 0)?.unwrap();
-        let expected = Value::from(simd_json::json!({
-            "hostname": null,
+        let expected = literal!({
             "severity": "debug",
             "facility": "local7",
-            "appname": null,
             "msg": "message",
-            "msgid": null,
-            "procid": null,
             "protocol": "RFC5424",
             "protocol_version": 1,
-            "structured_data": null,
             "timestamp": 1_616_099_400_123_000_000_u64
-        }));
+        });
         assert_eq!(
             tremor_script::utils::sorted_serialize(&expected)?,
             tremor_script::utils::sorted_serialize(&decoded)?
@@ -353,20 +409,11 @@ mod test {
     #[test]
     fn decode_invalid_message() -> Result<()> {
         let mut msg = b"an invalid message".to_vec();
-        let mut codec = Syslog {};
+        let mut codec = test_codec();
         let decoded = codec.decode(msg.as_mut_slice(), 0)?.unwrap();
         let expected = Value::from(simd_json::json!({
-            "hostname": null,
-            "severity": null,
-            "facility": null,
-            "appname": null,
             "msg": "an invalid message",
-            "msgid": null,
-            "procid": null,
             "protocol": "RFC3164",
-            "protocol_version": null,
-            "structured_data": null,
-            "timestamp": null
         }));
         assert_eq!(
             tremor_script::utils::sorted_serialize(&expected)?,
@@ -377,23 +424,27 @@ mod test {
 
     #[test]
     fn encode_empty_rfc5424() -> Result<()> {
-        let codec = Syslog {};
-        let msg = Value::from(simd_json::json!({
+        let mut codec = test_codec();
+        let msg = literal!({
             "severity": "notice",
             "facility": "local4",
             "msg": "test message",
             "protocol": "RFC5424",
-            "protocol_version": 1
-        }));
-        let encoded = codec.encode(&msg)?;
-        let expected = "<165>1 - - - - - - test message";
+            "protocol_version": 1,
+            "timestamp": 0_u64
+        });
+        let mut encoded = codec.encode(&msg)?;
+        let expected = "<165>1 1970-01-01T00:00:00+00:00 - - - - - test message";
         assert_eq!(std::str::from_utf8(&encoded).unwrap(), expected);
+        let decoded = codec.decode(&mut encoded, 0)?.unwrap();
+        assert_eq!(msg, decoded);
+
         Ok(())
     }
 
     #[test]
     fn encode_empty_rfc3164() -> Result<()> {
-        let codec = Syslog {};
+        let codec = test_codec();
         let msg = Value::from(simd_json::json!({
             "severity": "notice",
             "facility": "local4",
@@ -401,7 +452,7 @@ mod test {
             "protocol": "RFC3164"
         }));
         let encoded = codec.encode(&msg)?;
-        let expected = "<165> - - : test message";
+        let expected = "<165>Jan  1 00:00:00 - : test message";
         assert_eq!(std::str::from_utf8(&encoded).unwrap(), expected);
         Ok(())
     }
@@ -411,21 +462,19 @@ mod test {
         let mut msg =
             b"<13>1 2021-03-18T20:30:00.123Z 74794bfb6795 root 8449 - [incorrect x] message"
                 .to_vec();
-        let mut codec = Syslog {};
+        let mut codec = test_codec();
         let decoded = codec.decode(msg.as_mut_slice(), 0)?.unwrap();
-        let expected = Value::from(simd_json::json!({
+        let expected = literal!({
             "hostname": "74794bfb6795",
             "severity": "notice",
             "facility": "user",
             "appname": "root",
             "msg": "message",
-            "msgid": null,
             "procid": "8449",
             "protocol": "RFC5424",
             "protocol_version": 1,
-            "structured_data": null,
             "timestamp": 1_616_099_400_123_000_000_u64
-        }));
+        });
         assert_eq!(
             tremor_script::utils::sorted_serialize(&expected)?,
             tremor_script::utils::sorted_serialize(&decoded)?
@@ -435,20 +484,16 @@ mod test {
 
     #[test]
     fn test_invalid_sd_3164() -> Result<()> {
-        let mut s = b"<46>Jan  5 15:33:03 plertrood-ThinkPad-X220 rsyslogd:  [software=\"rsyslogd\" swVersion=\"8.32.0\"] message".to_vec();
-        let mut codec = Syslog {};
+        let mut s: Vec<u8> = r#"<46>Jan  5 15:33:03 plertrood-ThinkPad-X220 rsyslogd:  [software="rsyslogd" swVersion="8.32.0"] message"#.as_bytes().to_vec();
+        let mut codec = test_codec();
         let decoded = codec.decode(s.as_mut_slice(), 0)?.unwrap();
         let expected = Value::from(simd_json::json!({
             "hostname": "plertrood-ThinkPad-X220",
             "severity": "info",
             "facility": "syslog",
             "appname": "rsyslogd",
-            "msg": "message",
-            "msgid": null,
-            "procid": null,
+            "msg": "[software=\"rsyslogd\" swVersion=\"8.32.0\"] message",
             "protocol": "RFC3164",
-            "protocol_version": null,
-            "structured_data": null,
             "timestamp": 1_609_860_783_000_000_000_u64
         }));
         assert_eq!(
@@ -461,23 +506,69 @@ mod test {
     #[test]
     fn errors() {
         let mut o = Value::object();
-        let s = Syslog {};
+        let codec = test_codec();
         assert_eq!(
-            s.encode(&o).err().unwrap().to_string(),
+            codec.encode(&o).err().unwrap().to_string(),
             "Invalid Syslog Protocol data: facility missing"
         );
 
         o.insert("facility", "cron").unwrap();
         assert_eq!(
-            s.encode(&o).err().unwrap().to_string(),
+            codec.encode(&o).err().unwrap().to_string(),
             "Invalid Syslog Protocol data: severity missing"
         );
 
         o.insert("severity", "info").unwrap();
         o.insert("structured_data", "sd").unwrap();
         assert_eq!(
-            s.encode(&o).err().unwrap().to_string(),
+            codec.encode(&o).err().unwrap().to_string(),
             "Invalid Syslog Protocol data: Invalid structured data: structured data not an object"
         );
+    }
+
+    #[test_case(r#"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8"#, None => Ok(()); "Example 1")]
+    // error during encoding step, as important data is missing
+    #[test_case(r#"Use the BFG!"#, Some(r#"<13>Jan  1 00:00:00 - : Use the BFG!"#) => Ok(()); "Example 2")]
+    //
+    #[test_case(r#"<165>Aug 24 05:34:00 CST 1987 mymachine myproc[10]: %% It's time to make the do-nuts.  %%  Ingredients: Mix=OK, Jelly=OK # Devices: Mixer=OK, Jelly_Injector=OK, Frier=OK # Transport:Conveyer1=OK, Conveyer2=OK # %%"#, Some(r#"<165>Aug 24 05:34:00 CST 1987: mymachine myproc[10]: %% It's time to make the do-nuts.  %%  Ingredients: Mix=OK, Jelly=OK # Devices: Mixer=OK, Jelly_Injector=OK, Frier=OK # Transport:Conveyer1=OK, Conveyer2=OK # %%"#) => Ok(()); "Example 3")]
+    #[test_case(r#"<0>1990 Oct 22 10:52:01 TZ-6 scapegoat.dmz.example.org 10.1.2.3 sched[0]: That's All Folks!"#, Some(r#"<13>Jan  1 00:00:00 - : <0>1990 Oct 22 10:52:01 TZ-6 scapegoat.dmz.example.org 10.1.2.3 sched[0]: That's All Folks!"#) => Ok(()); "Example 4")]
+    fn rfc3164_examples(sample: &'static str, expected: Option<&'static str>) -> Result<()> {
+        let mut codec = test_codec();
+        let mut vec = sample.as_bytes().to_vec();
+        let decoded = codec.decode(&mut vec, 0)?.unwrap();
+        let a = codec.encode(&decoded)?;
+        if let Some(expected) = expected {
+            // compare against expected output
+            assert_eq!(expected, std::str::from_utf8(&a)?);
+        } else {
+            // compare against sample
+            assert_eq!(sample, std::str::from_utf8(&a)?);
+        }
+        Ok(())
+    }
+
+    // date formatting is a bit different
+    #[test_case("<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - \u{FEFF}'su root' failed for lonvick on /dev/pts/8",
+           Some("<34>1 2003-10-11T22:14:15.003+00:00 mymachine.example.com su - ID47 - \u{feff}'su root' failed for lonvick on /dev/pts/8") => Ok(()); "Example 1")]
+    // we always parse to UTC date - so encoding a decoded msg will always give UTC
+    #[test_case(r#"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - - %% It's time to make the do-nuts."#,
+           Some(r#"<165>1 2003-08-24T12:14:15.000003+00:00 192.0.2.1 myproc 8710 - - %% It's time to make the do-nuts."#) => Ok(()); "Example 2")]
+    #[test_case("<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] \u{FEFF}An application event log entry...",
+           Some("<165>1 2003-10-11T22:14:15.003+00:00 mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] \u{feff}An application event log entry...") => Ok(()); "Example 3")]
+    #[test_case(r#"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut="3" eventSource="Application" eventID="1011"][examplePriority@32473 class="high"]"#,
+           Some(r#"<165>1 2003-10-11T22:14:15.003+00:00 mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut="3" eventSource="Application" eventID="1011"][examplePriority@32473 class="high"]"#) => Ok(()); "Example 4")]
+    fn rfc5424_examples(sample: &'static str, expected: Option<&'static str>) -> Result<()> {
+        let mut codec = test_codec();
+        let mut vec = sample.as_bytes().to_vec();
+        let decoded = codec.decode(&mut vec, 0)?.unwrap();
+        let a = codec.encode(&decoded)?;
+        if let Some(expected) = expected {
+            // compare against expected output
+            assert_eq!(expected, std::str::from_utf8(&a)?);
+        } else {
+            // compare against sample
+            assert_eq!(sample, std::str::from_utf8(&a)?);
+        }
+        Ok(())
     }
 }

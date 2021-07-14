@@ -34,7 +34,7 @@ pub struct Batch {
     pub len: usize,
     pub max_delay_ns: Option<u64>,
     pub first_ns: u64,
-    pub id: Cow<'static, str>,
+    pub id: String,
     /// event id for the resulting batched event
     /// the resulting id will be a new distinct id and will be tracking
     /// all event ids (min and max) in the batched event
@@ -253,7 +253,7 @@ mod test {
     #[test]
     fn time() -> Result<()> {
         let node_config = NodeConfig::from_config(
-            "badger",
+            &"badger",
             Config {
                 count: 100,
                 timeout: Some(1),

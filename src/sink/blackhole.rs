@@ -56,6 +56,7 @@ pub struct Blackhole {
     delivered: Histogram<u64>,
     run_secs: f64,
     bytes: usize,
+    count: u64,
     buf: Vec<u8>,
 }
 
@@ -76,6 +77,7 @@ impl offramp::Impl for Blackhole {
                     config.significant_figures as u8,
                 )?,
                 bytes: 0,
+                count: 0,
                 buf: Vec::with_capacity(1024),
             }))
         } else {
@@ -115,8 +117,9 @@ impl Sink for Blackhole {
             serializer.serialize(&self.delivered, &mut buf)?;
             if quantiles(buf.as_slice(), stdout(), 5, 2).is_ok() {
                 println!(
-                    "\n\nThroughput: {:.1} MB/s",
-                    (self.bytes as f64 / self.run_secs) / (1024.0 * 1024.0)
+                    "\n\nThroughput   (data): {:.1} MB/s\nThroughput (events): {:.1}k events/s",
+                    (self.bytes as f64 / self.run_secs) / (1024.0 * 1024.0),
+                    (self.count as f64 / self.run_secs) / 1000.0
                 );
             } else {
                 eprintln!("Failed to serialize histogram");
@@ -132,6 +135,7 @@ impl Sink for Blackhole {
                 } else {
                     error!("failed to encode");
                 };
+                self.count += 1;
                 self.buf.clear();
                 self.delivered.record(delta_ns)?
             }

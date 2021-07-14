@@ -35,9 +35,9 @@ mod imut_expr;
 
 pub use self::expr::Cont;
 use crate::ast::{
-    ArrayPattern, ArrayPredicatePattern, BaseExpr, BinOpKind, Consts, GroupBy, GroupByInt,
-    ImutExprInt, InvokeAggrFn, NodeMetas, Patch, PatchOperation, Path, Pattern, PredicatePattern,
-    RecordPattern, ReservedPath, Segment, StringLit, TuplePattern, UnaryOpKind,
+    ArrayPattern, ArrayPredicatePattern, BaseExpr, BinOpKind, GroupBy, GroupByInt, ImutExprInt,
+    InvokeAggrFn, NodeMetas, Patch, PatchOperation, Path, Pattern, PredicatePattern, RecordPattern,
+    ReservedPath, RunConsts, Segment, StringLit, TuplePattern, UnaryOpKind,
 };
 use crate::errors::{
     error_array_out_of_bound, error_bad_array_index, error_bad_key, error_bad_key_err,
@@ -82,7 +82,7 @@ where
     /// Context of the event
     pub context: &'run EventContext,
     /// Constants
-    pub consts: &'run Consts<'event>,
+    pub consts: RunConsts<'run, 'event>,
     /// Aggregates
     pub aggrs: &'run [InvokeAggrFn<'event>],
     /// Node metadata
@@ -1534,7 +1534,7 @@ impl<'script> GroupByInt<'script> {
         };
         let local_stack = LocalStack::with_size(0);
         let env = Env {
-            consts: &NO_CONSTS,
+            consts: NO_CONSTS.run(),
             context: ctx,
             aggrs: &NO_AGGRS,
             meta: node_meta,
