@@ -189,6 +189,10 @@ error_chain! {
             description("The artifact was not found")
                 display("The artifact was not found: {}", id)
         }
+        CodecNotFound(name: String) {
+            description("Codec not found")
+                display("The codec was not found: {}", name)
+        }
         PublishFailedAlreadyExists(key: String) {
             description("The published artefact already exists")
                 display("The published {} already exists.", key)

@@ -25,6 +25,7 @@ use std::io::Write;
 use std::mem;
 use std::str;
 
+trait PostprocessorState {}
 /// Postprocessor trait
 pub trait Postprocessor: Send + Sync {
     /// Canonical name of the postprocessor

@@ -21,10 +21,15 @@ use async_channel::{bounded, Sender, TrySendError};
 use async_std::net::TcpListener;
 use async_std::task::{self, JoinHandle};
 use futures::io::{AsyncReadExt, AsyncWriteExt};
+use futures::FutureExt;
 use simd_json::ValueAccess;
 use tremor_common::stry;
 use tremor_pipeline::EventOriginUri;
 use tremor_value::{literal, Value};
+
+use super::reconnect::ConnectionLostNotifier;
+use super::sink::{SinkAddr, SinkManagerBuilder};
+use super::source::{SourceAddr, SourceManagerBuilder};
 
 const URL_SCHEME: &str = "tremor-tcp";
 
@@ -131,28 +136,37 @@ impl Connector for TcpServer {
 
     async fn create_source(
         &mut self,
-        _source_context: &mut SourceContext,
-    ) -> Result<Option<Box<dyn Source>>> {
-        let source = ChannelSource::new(crate::QSIZE);
+        ctx: SourceContext,
+        builder: SourceManagerBuilder,
+    ) -> Result<Option<SourceAddr>> {
+        let source = ChannelSource::new(builder.qsize());
         self.source_channel = source.sender();
-        Ok(Some(Box::new(source)))
+        let addr = builder.spawn(source, ctx)?;
+
+        Ok(Some(addr))
     }
 
     async fn create_sink(
         &mut self,
-        _sink_context: &mut SinkContext,
-    ) -> Result<Option<Box<dyn Sink>>> {
-        let sink = ChannelSink::new(crate::QSIZE, resolve_connection_meta);
+        ctx: SinkContext,
+        builder: SinkManagerBuilder,
+    ) -> Result<Option<SinkAddr>> {
+        let sink = ChannelSink::new(builder.qsize(), resolve_connection_meta);
         self.sink_channel = sink.sender();
-        Ok(Some(Box::new(sink)))
+        let addr = builder.spawn(sink, ctx)?;
+        Ok(Some(addr))
     }
 
-    async fn connect(&mut self, ctx: &ConnectorContext) -> Result<bool> {
+    async fn connect(
+        &mut self,
+        ctx: &ConnectorContext,
+        notifier: ConnectionLostNotifier,
+    ) -> Result<bool> {
         let path = vec![self.config.port.to_string()];
         let uid = ctx.uid;
         let accept_url = self.url.clone();
 
-        let sc = self.source_channel.clone();
+        let source_tx = self.source_channel.clone();
         let sink_tx = self.sink_channel.clone();
         let buf_size = self.config.buf_size;
 
@@ -172,7 +186,7 @@ impl Connector for TcpServer {
                 let connection_meta = peer_addr.into();
 
                 let (mut read_half, mut write_half) = stream.split();
-                let sc_stream = sc.clone();
+                let sc_stream = source_tx.clone();
                 let stream_url = accept_url.clone();
 
                 let origin_uri = EventOriginUri {
@@ -185,7 +199,7 @@ impl Connector for TcpServer {
                 };
 
                 // TODO: issue metrics on send time, to detect queues running full
-                stry!(send(&accept_url, SourceReply::StartStream(my_id), &sc).await);
+                stry!(send(&accept_url, SourceReply::StartStream(my_id), &source_tx).await);
 
                 // spawn source stream task
                 task::spawn(async move {
@@ -234,7 +248,9 @@ impl Connector for TcpServer {
                     })
                     .await?;
             }
-            // TODO: notify connector task about disconnect
+            // notify connector task about disconnect
+            // of the listening socket
+            notifier.notify().await?;
             Ok(())
         }));
 

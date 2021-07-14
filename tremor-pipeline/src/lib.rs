@@ -145,6 +145,9 @@ where
 #[derive(
     Clone, Debug, Default, PartialEq, simd_json_derive::Serialize, simd_json_derive::Deserialize,
 )]
+// TODO: optimization: - use two Vecs, one for operator ids, one for operator metadata (Values)
+//                     - make it possible to trace operators with and without metadata
+//                     - insert with bisect (numbers of operators tracked will be low single digit numbers most of the time)
 pub struct OpMeta(BTreeMap<PrimStr<u64>, OwnedValue>);
 
 impl OpMeta {
@@ -231,6 +234,7 @@ pub enum CbAction {
     Close,
     /// The circuit breaker is restored and should work again
     Open,
+    // TODO: add stream based CbAction variants once their use manifests
     /// Acknowledge delivery of messages up to a given ID.
     /// All messages prior to and including  this will be considered delivered.
     Ack,
@@ -703,7 +707,7 @@ impl EventIdGenerator {
 )]
 pub enum SignalKind {
     // Lifecycle
-    /// Init singnal
+    /// Init signal
     Init,
     /// Shutdown Signal
     Shutdown,

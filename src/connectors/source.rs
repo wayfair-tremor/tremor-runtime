@@ -12,13 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use async_std::task;
+use std::collections::BTreeMap;
+
+use crate::codec::{self, Codec};
+use crate::config::Connector as ConnectorConfig;
 use crate::errors::Result;
 use crate::pipeline;
+use crate::preprocessor::{make_preprocessors, Preprocessors};
 use crate::url::TremorUrl;
 use async_channel::{bounded, Receiver, Sender};
 use beef::Cow;
 use halfbrown::HashMap;
-use tremor_pipeline::EventOriginUri;
+use tremor_pipeline::{CbAction, EventId, EventOriginUri};
 use tremor_value::Value;
 
 /// Messages a Source can receive
@@ -37,6 +43,12 @@ pub enum SourceMsg {
         /// url of the pipeline
         id: TremorUrl,
     },
+    /// connectivity is lost in the connector
+    ConnectionLost,
+    /// connectivity is re-established
+    ConnectionEstablished,
+    /// Circuit Breaker Contraflow Event
+    Cb(CbAction, EventId),
     // TODO: fill those
     /// start the source
     Start,
@@ -86,6 +98,22 @@ pub trait Source: Send {
         Ok(())
     }
     // TODO: lifecycle callbacks
+    async fn on_start(&mut self, _ctx: &mut SourceContext) {}
+    async fn on_pause(&mut self, _ctx: &mut SourceContext) {}
+    async fn on_resume(&mut self, _ctx: &mut SourceContext) {}
+    async fn on_stop(&mut self, _ctx: &mut SourceContext) {}
+
+    // connectivity stuff
+    // TODO: needed?
+    /// called when connector lost connectivity
+    async fn on_connection_lost(&mut self, _ctx: &mut SourceContext) {}
+    /// called when connector re-established connectivity
+    async fn on_connection_established(&mut self, _ctx: &mut SourceContext) {}
+
+    /// Is this source transactional or can acks/fails be ignored
+    fn is_transactional(&self) -> bool {
+        false
+    }
 }
 
 /// a source that
@@ -128,7 +156,6 @@ pub struct SourceContext {
     pub uid: u64,
     /// connector url
     pub url: TremorUrl,
-    // TODO: preprocessors/interceptor-chain?
 }
 
 /// address of a source
@@ -138,38 +165,178 @@ pub struct SourceAddr {
     pub addr: async_channel::Sender<SourceMsg>,
 }
 
-/// source control plane
-pub async fn source_task(
-    receiver: async_channel::Receiver<SourceMsg>,
-    _source: Box<dyn Source>,
-    _ctx: SourceContext,
-) -> Result<()> {
-    let mut connected: HashMap<Cow<'static, str>, Vec<(TremorUrl, pipeline::Addr)>> =
-        HashMap::with_capacity(2); // capacity for OUT and ERR port
+struct StreamState {
+    preprocessors: Preprocessors,
+}
 
-    // check control plane messages
-    while let Ok(source_msg) = receiver.recv().await {
-        match source_msg {
-            SourceMsg::Connect {
-                port,
-                mut pipelines,
-            } => {
-                if let Some(pipes) = connected.get_mut(&port) {
-                    pipes.append(&mut pipelines);
-                } else {
-                    connected.insert(port, pipelines);
-                }
-            }
-            SourceMsg::Disconnect { id, port } => {
-                if let Some(pipes) = connected.get_mut(&port) {
-                    pipes.retain(|(url, _)| url == &id)
-                }
-            }
-            SourceMsg::Start => {}
-            SourceMsg::Resume => {}
-            SourceMsg::Pause => {}
-            SourceMsg::Stop => {}
+pub(crate) struct SourceManagerBuilder {
+    qsize: usize,
+    /// the configured codec
+    codec: Box<dyn Codec>,
+    codec_map: HashMap<String, Box<dyn Codec>>,
+    /// the configured pre processors for the default stream
+    preprocessors: Preprocessors,
+    preprocessor_names: Vec<String>,
+}
+
+impl SourceManagerBuilder {
+    pub(crate) fn qsize(&self) -> usize {
+        self.qsize
+    }
+
+    pub(crate) fn spawn<S>(self, source: S, ctx: SourceContext) -> Result<SourceAddr>
+    where
+        S: Source + Send + 'static,
+    {
+        let qsize = self.qsize;
+        let name = ctx.url.short_id("c-src"); // connector source
+        let (source_tx, source_rx) = bounded(qsize);
+        let manager = SourceManager::new(source, ctx, self, source_rx);
+        // spawn manager task
+        task::Builder::new().name(name).spawn(manager.run())?;
+
+        Ok(SourceAddr { addr: source_tx })
+    }
+}
+
+/// create a builder for a `SourceManager`.
+/// with the generic information available in the connector
+/// the builder then in a second step takes the source specific information to assemble and spawn the actual `SourceManager`.
+pub(crate) fn builder(
+    config: &ConnectorConfig,
+    connector_default_codec: &str,
+    qsize: usize,
+) -> Result<SourceManagerBuilder> {
+    // resolve codec
+    let codec = if let Some(codec_config) = config.codec.as_ref() {
+        codec::resolve(codec_config)?
+    } else {
+        codec::lookup(connector_default_codec)?
+    };
+    // resolve codec map
+    let codec_map = if let Some(config_map) = config.codec_map {
+        let codec_map = HashMap::with_capacity(config_map.len());
+        for (k, v) in &config_map {
+            codec_map.insert(k.clone(), codec::resolve(v)?);
+        }
+        codec_map
+    } else {
+        HashMap::with_capacity(0)
+    };
+    // resolve preprocessors
+    let preprocessor_names = config.preprocessors.clone().unwrap_or_else(|| vec![]);
+    let preprocessors = make_preprocessors(&preprocessor_names)?;
+    Ok(SourceManagerBuilder {
+        qsize,
+        codec,
+        codec_map,
+        preprocessors,
+        preprocessor_names,
+    })
+}
+
+/// entity driving the source task
+/// and keeping the source state around
+pub(crate) struct SourceManager<S>
+where
+    S: Source,
+{
+    source: S,
+    ctx: SourceContext,
+    rx: Receiver<SourceMsg>,
+    /// the configured codec
+    codec: Box<dyn Codec>,
+    codec_map: HashMap<String, Box<dyn Codec>>,
+    // TODO: codec_map
+    /// the configured pre processors for the default stream
+    preprocessors: Preprocessors,
+    preprocessor_names: Vec<String>,
+    stream_states: BTreeMap<usize, StreamState>,
+    pipelines: HashMap<Cow<'static, str>, Vec<(TremorUrl, pipeline::Addr)>>,
+    paused: bool,
+    // TODO: add metrics reporter to metrics connector
+}
+
+impl<S> SourceManager<S>
+where
+    S: Source,
+{
+    fn new(
+        source: S,
+        ctx: SourceContext,
+        builder: SourceManagerBuilder,
+        rx: Receiver<SourceMsg>,
+    ) -> Self {
+        let SourceManagerBuilder {
+            codec,
+            codec_map,
+            preprocessors,
+            preprocessor_names,
+            ..
+        } = builder;
+        Self {
+            source,
+            ctx,
+            rx,
+            codec,
+            codec_map,
+            preprocessors,
+            preprocessor_names,
+            stream_states: BTreeMap::new(),
+            pipelines: HashMap::with_capacity(2),
+            paused: false,
         }
     }
-    Ok(())
+
+    /// the source task
+    ///
+    /// handling control plane and data plane in a loop
+    // TODO: data plane
+    async fn run(mut self) -> Result<()> {
+        loop {
+            while let Ok(source_msg) = self.rx.recv().await {
+                match source_msg {
+                    SourceMsg::Connect {
+                        port,
+                        mut pipelines,
+                    } => {
+                        if let Some(pipes) = self.pipelines.get_mut(&port) {
+                            pipes.append(&mut pipelines);
+                        } else {
+                            self.pipelines.insert(port, pipelines);
+                        }
+                    }
+                    SourceMsg::Disconnect { id, port } => {
+                        if let Some(pipes) = self.pipelines.get_mut(&port) {
+                            pipes.retain(|(url, _)| url == &id)
+                        }
+                    }
+                    SourceMsg::Start => {
+                        self.paused = false;
+                        self.source.on_start(&mut self.ctx).await
+                    }
+                    SourceMsg::Resume => {
+                        self.paused = false;
+                        self.source.on_resume(&mut self.ctx).await
+                    }
+                    SourceMsg::Pause => {
+                        self.paused = true;
+                        self.source.on_pause(&mut self.ctx).await
+                    }
+                    SourceMsg::Stop => self.source.on_stop(&mut self.ctx).await,
+                    SourceMsg::ConnectionLost => {
+                        self.paused = true;
+                        self.source.on_connection_lost(&mut self.ctx).await
+                    }
+                    SourceMsg::ConnectionEstablished => {
+                        self.paused = true;
+                        self.source.on_connection_established(&mut self.ctx).await
+                    }
+                    SourceMsg::Cb(cb, id) => {
+                        todo!()
+                    }
+                }
+            }
+        }
+    }
 }

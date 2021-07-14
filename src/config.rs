@@ -161,6 +161,24 @@ impl Default for ReconnectConfig {
     }
 }
 
+/// how a connector behaves upon Pause or CB trigger events
+/// w.r.t maintaining its connection to the outside world (e.g. TCP connection, database connection)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PauseBehaviour {
+    /// close the connection
+    Close,
+    /// does not support Pause and throws an error if it is attempted
+    Error,
+    /// keep the connection open, this will possibly fill OS buffers and lead to sneaky errors once they run full
+    KeepOpen,
+}
+
+impl Default for PauseBehaviour {
+    fn default() -> Self {
+        Self::KeepOpen
+    }
+}
+
 /// Codec name and configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -168,6 +186,15 @@ pub struct CodecConfig {
     pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) config: tremor_pipeline::ConfigMap,
+}
+
+impl From<&str> for CodecConfig {
+    fn from(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            config: None,
+        }
+    }
 }
 
 /// Connector configuration - only the parts applicable to all connectors
@@ -205,7 +232,7 @@ pub struct Connector {
     /// A default builtin codec mapping is defined
     /// for msgpack, json, yaml and plaintext codecs with the common mime-types
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
-    pub(crate) codec_map: Option<halfbrown::HashMap<String, String>>,
+    pub(crate) codec_map: Option<halfbrown::HashMap<String, Either<String, CodecConfig>>>,
 
     // TODO: interceptors or configurable processors
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
@@ -215,6 +242,18 @@ pub struct Connector {
 
     #[serde(default)]
     pub(crate) reconnect: ReconnectConfig,
+
+    #[serde(default)]
+    pub(crate) on_pause: PauseBehaviour,
+}
+
+impl Connector {
+    fn codec_config(&self) -> Option<CodecConfig> {
+        self.codec.map(|e| match e {
+            Either::Left(s) => CodecConfig::from(s.as_str()),
+            Either::Right(config) => config,
+        })
+    }
 }
 
 /// Configuration for a Binding

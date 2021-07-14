@@ -89,7 +89,7 @@ pub use interpreter::{AggrType, FALSE, NULL, TRUE};
 use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicU32, Ordering};
 pub use tremor_common::stry;
-pub use tremor_value::{KnownKey, Object, Value};
+pub use tremor_value::{literal, KnownKey, Object, Value};
 
 /// Default recursion limit
 pub static RECURSION_LIMIT: AtomicU32 = AtomicU32::new(1024);

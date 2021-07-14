@@ -16,7 +16,6 @@
 use crate::config::ReconnectConfig;
 use crate::connectors::{Addr, Connectivity, Connector, ConnectorContext, Msg};
 use crate::errors::{ErrorKind, Result};
-use crate::url::TremorUrl;
 use async_channel::Sender;
 use async_std::task;
 use std::time::Duration;
@@ -26,16 +25,37 @@ pub(crate) struct Reconnect {
     attempt: u64,
     interval_ms: u64,
     config: ReconnectConfig,
+    addr: Addr,
+}
+
+/// Notifier that connector implementations
+/// can use to asynchronously notify the runtime whenever their connection is lost
+///
+/// This will change the connector state properly and trigger a new reconnect attempt (according to the configured logic)
+pub(crate) struct ConnectionLostNotifier(Sender<Msg>);
+
+impl ConnectionLostNotifier {
+    pub(crate) async fn notify(&self) -> Result<()> {
+        self.0.send(Msg::ConnectionLost).await?;
+        Ok(())
+    }
+}
+
+impl From<&Addr> for ConnectionLostNotifier {
+    fn from(addr: &Addr) -> Self {
+        Self(addr.sender.clone())
+    }
 }
 
 impl Reconnect {
     /// constructor
-    fn new(config: ReconnectConfig) -> Self {
+    pub(crate) fn new(connector_addr: &Addr, config: ReconnectConfig) -> Self {
         let interval_ms = config.interval_ms;
         Self {
             config,
             interval_ms,
             attempt: 0,
+            addr: connector_addr.clone(),
         }
     }
 
@@ -47,16 +67,15 @@ impl Reconnect {
         &mut self,
         connector: &mut dyn Connector,
         ctx: &ConnectorContext,
-        addr: &Addr,
     ) -> Result<Connectivity> {
-        match connector.connect(&ctx).await {
+        let notifier = ConnectionLostNotifier::from(&self.addr);
+        match connector.connect(&ctx, notifier).await {
             Ok(true) => {
                 self.reset();
                 Ok(Connectivity::Connected)
             }
             Ok(false) => {
-                // TODO: avoid some of those clones
-                self.update_and_retry(addr.sender.clone(), addr.url.clone())?;
+                self.update_and_retry()?;
 
                 Ok(Connectivity::Disconnected)
             }
@@ -64,10 +83,9 @@ impl Reconnect {
             Err(e) => {
                 error!(
                     "[Connector::{}] Reconnect Error (Attempt {}): {}",
-                    addr.url, self.attempt, e
+                    &ctx.url, self.attempt, e
                 );
-                // TODO: avoid some of those clones
-                self.update_and_retry(addr.sender.clone(), addr.url.clone())?;
+                self.update_and_retry()?;
 
                 Ok(Connectivity::Disconnected)
             }
@@ -76,7 +94,7 @@ impl Reconnect {
 
     /// update internal state for the current failed connect attempt
     /// and spawn a retry task
-    fn update_and_retry(&mut self, sender: Sender<Msg>, url: TremorUrl) -> Result<()> {
+    fn update_and_retry(&mut self) -> Result<()> {
         // update internal state
         if let Some(max_retries) = self.config.max_retry {
             if self.attempt >= max_retries {
@@ -89,6 +107,9 @@ impl Reconnect {
 
         // spawn retry
         let duration = Duration::from_millis(self.interval_ms);
+        // TODO: meh, clones. But then again: *shrug*
+        let sender = self.addr.sender.clone();
+        let url = self.addr.url.clone();
         task::spawn(async move {
             task::sleep(duration).await;
             if let Err(_) = sender.send(Msg::Reconnect).await {
@@ -106,11 +127,5 @@ impl Reconnect {
     fn reset(&mut self) {
         self.attempt = 0;
         self.interval_ms = self.config.interval_ms;
-    }
-}
-
-impl From<ReconnectConfig> for Reconnect {
-    fn from(config: ReconnectConfig) -> Self {
-        Self::new(config)
     }
 }

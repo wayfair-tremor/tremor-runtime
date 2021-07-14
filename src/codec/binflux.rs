@@ -18,7 +18,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::convert::TryFrom;
 use std::io::{Cursor, Write};
 use std::str;
-use tremor_script::Object;
+use tremor_value::{literal, Object, Value};
 
 const TYPE_I64: u8 = 0;
 const TYPE_F64: u8 = 1;
@@ -118,8 +118,8 @@ impl BInflux {
         if vsn != 0 {
             return Err(ErrorKind::InvalidBInfluxData("invalid version".into()).into());
         };
-        let measurement = Value::from(read_string(&mut c)?);
-        let timestamp = Value::from(c.read_u64::<BigEndian>()?);
+        let measurement = read_string(&mut c)?;
+        let timestamp = c.read_u64::<BigEndian>()?;
         let tag_count = c.read_u16::<BigEndian>()? as usize;
         let mut tags = Object::with_capacity(tag_count);
         for _i in 0..tag_count {
@@ -154,13 +154,12 @@ impl BInflux {
                 o => error!("bad field type: {}", o),
             }
         }
-        let mut result = Object::with_capacity(4);
-        result.insert("measurement".into(), measurement);
-        result.insert("tags".into(), Value::from(tags));
-        result.insert("fields".into(), Value::from(fields));
-        result.insert("timestamp".into(), timestamp);
-
-        Ok(Value::from(result))
+        Ok(literal!({
+            "measurement": measurement,
+            "tags": tags,
+            "fields": fields,
+            "timestamp": timestamp
+        }))
     }
 }
 

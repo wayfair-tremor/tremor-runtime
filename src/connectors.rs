@@ -40,15 +40,12 @@ pub(crate) mod tcp_server;
 
 use async_std::task::{self, JoinHandle};
 use beef::Cow;
-use either::Either;
 
-use crate::codec;
 use crate::config::Connector as ConnectorConfig;
-use crate::connectors::sink::{sink_task, Sink, SinkAddr, SinkContext, SinkMsg};
-use crate::connectors::source::{source_task, Source, SourceAddr, SourceContext, SourceMsg};
+use crate::connectors::sink::{Sink, SinkAddr, SinkContext, SinkMsg};
+use crate::connectors::source::{Source, SourceAddr, SourceContext, SourceMsg};
 use crate::errors::{Error, ErrorKind, Result};
 use crate::pipeline;
-use crate::postprocessor::make_postprocessors;
 use crate::system::World;
 use crate::url::ports::IN;
 use crate::url::TremorUrl;
@@ -107,12 +104,18 @@ pub enum Msg {
         /// sender to receive a boolean whether this connector is not connected to anything
         tx: async_channel::Sender<Result<bool>>,
     },
+    /// notification from the connector implementation that connectivity is lost and should be reestablished
+    ConnectionLost,
     /// initiate a reconnect attempt
-    Reconnect, // times we attempted a reconnect, time to wait
+    Reconnect,
     // TODO: fill as needed
     /// start the connector
     Start,
     /// pause the connector
+    ///
+    /// source part is not polling for new data
+    /// sink part issues a CB trigger
+    /// until Resume is called, sink is restoring the CB again
     Pause,
     /// resume the connector after a pause
     Resume,
@@ -296,56 +299,31 @@ impl Manager {
         // channel for connector-level control plane communication
         let (msg_tx, msg_rx) = bounded(self.qsize);
 
-        let mut reconnect: Reconnect = Reconnect::from(config.reconnect);
         let mut connectivity = Connectivity::Disconnected;
-
         let mut connector_state = ConnectorState::Stopped;
         dbg!(connector_state);
 
-        ///// create source instance
-        // channel for sending SourceReply to the source part of this connector
-        let mut source_ctx = SourceContext {
+        let default_codec = connector.default_codec();
+        let source_builder = source::builder(&config, default_codec, self.qsize)?;
+        let source_ctx = SourceContext {
             uid,
             url: url.clone(),
         };
-        let source = connector
-            .create_source(&mut source_ctx)
-            .await?
-            .map(|source| {
-                // start source task
-                let (source_tx, source_rx) = bounded(self.qsize);
-                let _handle = task::spawn(source_task(source_rx, source, source_ctx));
-                SourceAddr { addr: source_tx }
-            });
+        let sink_builder = sink::builder(&config, default_codec, self.qsize)?;
+        let sink_ctx = SinkContext {
+            uid,
+            url: url.clone(),
+        };
+        // create source instance
+        let source = connector.create_source(source_ctx, source_builder).await?;
 
         // create sink instance
-        let codec_name = config
-            .codec
-            .map(|s| match s {
-                Either::Left(s) => s,
-                Either::Right(config) => config.name,
-            })
-            .unwrap_or(connector.default_codec().to_string());
-        let codec = codec::lookup(&codec_name)?;
-        let postprocessors =
-            make_postprocessors(config.postprocessors.as_ref().unwrap_or(&vec![]))?;
-        let mut sink_ctx = SinkContext {
-            uid,
-            url: url.clone(),
-            codec,
-            postprocessors,
-        };
+        let sink = connector.create_sink(sink_ctx, sink_builder).await?;
 
         let ctx = ConnectorContext {
             uid,
             url: url.clone(),
         };
-        let sink = connector.create_sink(&mut sink_ctx).await?.map(|sink| {
-            // start sink task
-            let (sink_tx, sink_rx) = bounded(self.qsize);
-            let _handle = task::spawn(sink_task(sink_rx, sink, sink_ctx));
-            SinkAddr { addr: sink_tx }
-        });
 
         let addr = Addr {
             uid,
@@ -354,6 +332,8 @@ impl Manager {
             source,
             sink,
         };
+
+        let mut reconnect: Reconnect = Reconnect::new(&addr, config.reconnect);
         let send_addr = addr.clone();
         connector_state = ConnectorState::Initialized;
         dbg!(&connector_state);
@@ -468,19 +448,35 @@ impl Manager {
                         // TODO: work out more fine grained "empty" semantics
                         tx.send(res.map(|_| pipelines.is_empty())).await?
                     }
+                    Msg::ConnectionLost => {
+                        // react on the connection being lost
+                        // immediately try to reconnect.
+                        //
+                        // TODO: this might lead to very fast retry loops if the connection is established as connector.connect returns successful
+                        //       but in the next instant fails and sends this message.
+                        connectivity = Connectivity::Disconnected;
+                        info!("[Connector::{}] Disconnected.", &addr.url);
+                        addr.send_sink(SinkMsg::ConnectionLost).await?;
+                        addr.send_source(SourceMsg::ConnectionLost).await?;
+
+                        // reconnect
+                        addr.sender.send(Msg::Reconnect).await?;
+                    }
                     Msg::Reconnect => {
                         // reconnect if we are below max_retries, otherwise bail out and fail the connector
                         info!("[Connector::{}] Connecting...", &addr.url);
-                        let new = reconnect.attempt(connector.as_mut(), &ctx, &addr).await?;
+                        let new = reconnect.attempt(connector.as_mut(), &ctx).await?;
                         match (&new, &connectivity) {
                             (Connectivity::Disconnected, Connectivity::Connected) => {
                                 info!("[Connector::{}] Connected.", &addr.url);
                                 // notify sink
                                 addr.send_sink(SinkMsg::ConnectionEstablished).await?;
+                                addr.send_source(SourceMsg::ConnectionEstablished).await?;
                             }
                             (Connectivity::Connected, Connectivity::Disconnected) => {
                                 info!("[Connector::{}] Disconnected.", &addr.url);
                                 addr.send_sink(SinkMsg::ConnectionLost).await?;
+                                addr.send_source(SourceMsg::ConnectionLost).await?;
                             }
                             _ => {
                                 debug!("[Connector::{}] No change: {:?}", &addr.url, &new)
@@ -488,7 +484,7 @@ impl Manager {
                         }
                         connectivity = new;
                     }
-                    Msg::Start => {
+                    Msg::Start if connector_state == ConnectorState::Initialized => {
                         info!("[Connector::{}] Starting...", &addr.url);
                         // TODO: start connector
                         connector_state = match connector.on_start(&ctx).await {
@@ -511,9 +507,19 @@ impl Manager {
 
                         info!("[Connector::{}] Started.", &addr.url);
                     }
+                    Msg::Start => {
+                        info!(
+                            "[Connector::{}] Ignoring Start Msg. Current state: {:?}",
+                            &addr.url, &connector_state
+                        );
+                    }
                     Msg::Pause => {
                         info!("[Connector::{}] Pausing...", &addr.url);
 
+                        // TODO: in implementations that don't really support pausing
+                        //       issue a warning/error message
+                        //       e.g. UDP, TCP, Rest
+                        //
                         connector.on_pause(&ctx).await;
                         connector_state = ConnectorState::Paused;
 
@@ -522,7 +528,7 @@ impl Manager {
 
                         info!("[Connector::{}] Paused.", &addr.url);
                     }
-                    Msg::Resume => {
+                    Msg::Resume if connector_state == ConnectorState::Paused => {
                         info!("[Connector::{}] Resuming...", &addr.url);
                         // TODO: resume
                         connector.on_resume(&ctx).await;
@@ -532,6 +538,12 @@ impl Manager {
                         addr.send_sink(SinkMsg::Resume).await?;
 
                         info!("[Connector::{}] Resumed.", &addr.url);
+                    }
+                    Msg::Resume => {
+                        info!(
+                            "[Connector::{}] Ignoring Resume Msg. Current state: {:?}",
+                            &addr.url, &connector_state
+                        );
                     }
                     Msg::Stop => {
                         info!("[Connector::{}] Stopping...", &addr.url);
@@ -563,7 +575,7 @@ impl Manager {
 /// state of a connector
 #[derive(Debug, PartialEq)]
 pub enum ConnectorState {
-    /// connector has been initialized
+    /// connector has been initialized, but not yet started
     Initialized,
     /// connector is running
     Running,
@@ -612,8 +624,9 @@ pub trait Connector: Send {
     /// If this connector does not act as a source, return `Ok(None)`.
     async fn create_source(
         &mut self,
-        _source_context: &mut SourceContext,
-    ) -> Result<Option<Box<dyn Source>>> {
+        _source_context: SourceContext,
+        _builder: source::SourceManagerBuilder,
+    ) -> Result<Option<source::SourceAddr>> {
         Ok(None)
     }
 
@@ -623,15 +636,24 @@ pub trait Connector: Send {
     /// If this connector does not act as a sink, return `Ok(None)`.
     async fn create_sink(
         &mut self,
-        _sink_context: &mut SinkContext,
-    ) -> Result<Option<Box<dyn Sink>>> {
+        _sink_context: SinkContext,
+        _builder: sink::SinkManagerBuilder,
+    ) -> Result<Option<sink::SinkAddr>> {
         Ok(None)
     }
 
     /// Attempt to connect to the outside world
     /// Return `Ok(true)` if a connection could be established.
     /// This method will be retried if it fails or returns `Ok(false)`.
-    async fn connect(&mut self, ctx: &ConnectorContext) -> Result<bool>;
+    ///
+    /// To notify the runtime of the main connectivity being lost, a `notifier` is passed in.
+    /// Call `notifier.notify().await` as the last thing when you notice the connection is lost.
+    /// This is well suited when handling the connection in another task.
+    async fn connect(
+        &mut self,
+        ctx: &ConnectorContext,
+        notifier: reconnect::ConnectionLostNotifier,
+    ) -> Result<bool>;
 
     /// called once when the connector is started
     /// `connect` will be called after this for the first time, leave connection attempts in `connect`.

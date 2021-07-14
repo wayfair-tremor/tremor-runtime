@@ -723,7 +723,7 @@ mod test {
         let mut preprocessors = make_preprocessors(&["lines".to_string()])?;
         let mut ingest_ns = 42_u64;
         let ids = EventId::default();
-        let mut codec: Box<dyn Codec> = crate::codec::lookup("string")?;
+        let mut codec: Box<dyn Codec> = codec::lookup("string")?;
         let message = Message::Text("hello\nworld\n".to_string());
         let events = message_to_event(
             &sink_url,
@@ -748,7 +748,7 @@ mod test {
 
     #[test]
     fn event_to_message_ok() -> Result<()> {
-        let mut codec: Box<dyn Codec> = crate::codec::lookup("json")?;
+        let mut codec: Box<dyn Codec> = codec::lookup("json")?;
         let mut postprocessors = make_postprocessors(&["lines".to_string()])?;
         let mut data = Value::object_with_capacity(2);
         data.insert("snot", "badger")?;
@@ -772,7 +772,7 @@ mod test {
         let (reply_tx, reply_rx) = bounded(1000);
 
         let url = TremorUrl::parse("/offramp/ws/instance")?;
-        let mut codec: Box<dyn Codec> = crate::codec::lookup("json")?;
+        let mut codec: Box<dyn Codec> = codec::lookup("json")?;
         let config = Config {
             url: "http://idonotexist:65535/path".to_string(),
             binary: true,

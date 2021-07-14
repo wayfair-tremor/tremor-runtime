@@ -328,12 +328,7 @@ async fn handle_insights(pipeline: &mut ExecutableGraph, onramps: &Inputs) {
 }
 
 async fn tick(tick_tx: async_channel::Sender<Msg>) {
-    let mut e = Event {
-        ingest_ns: nanotime(),
-        kind: Some(SignalKind::Tick),
-        ..Event::default()
-    };
-
+    let mut e = Event::signal_tick();
     while tick_tx.send(Msg::Signal(e.clone())).await.is_ok() {
         task::sleep(Duration::from_millis(TICK_MS)).await;
         e.ingest_ns = nanotime();
