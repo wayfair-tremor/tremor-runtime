@@ -15,6 +15,7 @@
 #![cfg(not(tarpaulin_include))]
 
 use crate::codec::Codec;
+use crate::connectors::gcp::auth;
 use crate::errors::ErrorKind;
 use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
@@ -45,6 +46,13 @@ pub struct Endpoint {
     path: Option<String>,
     query: Option<String>,
     fragment: Option<String>,
+}
+
+/// Authorization methods
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Auth {
+    GCP,
 }
 
 fn none_if_empty(s: &str) -> Option<String> {
@@ -227,6 +235,9 @@ impl<'de> Deserialize<'de> for SerdeMethod {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    /// authorization method, if any.
+    pub auth: Option<Auth>,
+
     /// endpoint url - given as String or struct
     #[serde(deserialize_with = "string_or_struct", default)]
     pub endpoint: Endpoint,
@@ -452,6 +463,7 @@ impl Sink for Rest {
         let config_headers = self.config.headers.clone();
         let cloned_sink_url = sink_url.clone();
         self.sink_url = sink_url.clone();
+        let auth = self.config.auth.clone();
 
         // inbound channel towards codec task
         // sending events to be turned into requests
@@ -474,6 +486,7 @@ impl Sink for Rest {
                 reply_tx,
                 in_rx,
                 is_linked,
+                auth,
             )
             .await
         });
@@ -509,6 +522,7 @@ async fn codec_task(
     reply_tx: Sender<sink::Reply>,
     in_rx: Receiver<CodecTaskInMsg>,
     is_linked: bool,
+    auth: Option<Auth>,
 ) -> Result<()> {
     debug!("[Sink::{}] Codec task started.", &sink_url);
     let mut response_ids = EventIdGenerator::new(sink_uid);
@@ -518,18 +532,30 @@ async fn codec_task(
         host: hostname(),
         ..EventOriginUri::default()
     };
-
+    // create token in this lifetime (ambiguous to compiler), instead of bound to the sink.
+    let token = match auth {
+        Some(Auth::GCP) => {
+            let (t, _) = auth::authenticate_bearer().await?;
+            Some(t)
+        }
+        None => None,
+    };
     let codec: &mut dyn Codec = codec.as_mut();
     while let Ok(msg) = in_rx.recv().await {
         match msg {
             CodecTaskInMsg::ToRequest(event, tx) => {
+                let mut request_headers = default_headers.clone();
+                if let Some(ref t) = token {
+                    request_headers
+                        .insert("authorization".to_string(), t.header_value()?.to_string());
+                }
                 match build_request(
                     &event,
                     codec,
                     &codec_map,
                     postprocessors.as_mut_slice(),
                     default_method,
-                    &default_headers,
+                    &request_headers,
                     &endpoint,
                 ) {
                     Ok(request) => {

@@ -21,12 +21,15 @@ use gouth::Token;
 use reqwest::header::HeaderMap;
 use reqwest::Client;
 
-pub(crate) async fn authenticate_bearer() -> Result<String> {
-    Ok(Token::new()?.header_value()?.to_string())
+/// returns `gouth::Token` object and bearer token header as a string
+pub(crate) async fn authenticate_bearer() -> Result<(Token, String)> {
+    let token = Token::new()?;
+    let header_value_string = token.header_value()?.to_string();
+    Ok((token, header_value_string))
 }
 
 pub(crate) async fn json_api_client(extra_headers: &HeaderMap) -> Result<Client> {
-    let bearer = authenticate_bearer().await?;
+    let (_, bearer) = authenticate_bearer().await?;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         "authorization",
@@ -39,7 +42,6 @@ pub(crate) async fn json_api_client(extra_headers: &HeaderMap) -> Result<Client>
     for header in extra_headers {
         headers.append(header.0, header.1.clone());
     }
-
     Ok(reqwest::Client::builder()
         .default_headers(headers)
         .build()?)
