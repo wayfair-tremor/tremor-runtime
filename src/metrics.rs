@@ -29,12 +29,18 @@ pub(crate) struct Ramp {
     err: u64,
 }
 
+/// metrics reporter for onramps and offramps
 #[derive(Debug)]
-pub(crate) struct RampReporter {
+pub struct RampReporter {
+    /// url
     artefact_url: TremorUrl,
+    /// metrics counter
     metrics: Ramp,
+    /// reference to the metrics pipeline
     metrics_pipeline: Option<(TremorUrl, pipeline::Addr)>,
-    flush_interval: Option<u64>, // as nano-seconds
+    /// flush interval in nano-seconds
+    flush_interval: Option<u64>,
+    /// last flush nano-seconds
     last_flush_ns: u64,
 }
 

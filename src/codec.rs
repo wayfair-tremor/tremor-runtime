@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::errors::Result;
+use crate::config::CodecConfig;
+use crate::errors::{ErrorKind, Result};
+use either::Either;
 use tremor_script::Value;
 pub(crate) mod binary;
 pub(crate) mod binflux;
@@ -40,7 +42,7 @@ mod prelude {
     pub use super::Codec;
     pub use crate::errors::*;
     pub use tremor_script::prelude::*;
-    pub use tremor_script::{Object, Value};
+    pub use tremor_value::{Object, Value};
 }
 
 /// The codec trait, to encode and decode data
@@ -97,8 +99,9 @@ pub trait Codec: Send + Sync {
 ///
 /// # Errors
 ///  * if the codec doesn't exist
-pub fn lookup(name: &str) -> Result<Box<dyn Codec>> {
-    match name {
+// TODO: make use of config
+pub fn lookup_with_config(config: &CodecConfig) -> Result<Box<dyn Codec>> {
+    match config.name.as_str() {
         "json" => Ok(Box::new(json::Json::<json::Unsorted>::default())),
         "json-sorted" => Ok(Box::new(json::Json::<json::Sorted>::default())),
         "msgpack" => Ok(Box::new(msgpack::MsgPack {})),
@@ -109,8 +112,24 @@ pub fn lookup(name: &str) -> Result<Box<dyn Codec>> {
         "statsd" => Ok(Box::new(statsd::StatsD {})),
         "yaml" => Ok(Box::new(yaml::Yaml {})),
         "binary" => Ok(Box::new(binary::Binary {})),
+<<<<<<< HEAD
         "syslog" => Ok(Box::new(syslog::Syslog::utcnow())),
         _ => Err(format!("Codec '{}' not found.", name).into()),
+=======
+        "syslog" => Ok(Box::new(syslog::Syslog {})),
+        _ => Err(ErrorKind::CodecNotFound(config.name).into()),
+    }
+}
+
+pub fn lookup(name: &str) -> Result<Box<dyn Codec>> {
+    lookup_with_config(&CodecConfig::from(name))
+}
+
+pub fn resolve(config: &Either<String, CodecConfig>) -> Result<Box<dyn Codec>> {
+    match config {
+        Either::Left(name) => lookup(name.as_str()),
+        Either::Right(config) => lookup_with_config(&config),
+>>>>>>> 89b779cc (Sink event handling (yet unfinished))
     }
 }
 

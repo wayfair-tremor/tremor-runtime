@@ -90,15 +90,16 @@ impl std::fmt::Display for PubSubCommand {
 
 impl ConfigImpl for Config {}
 
-impl offramp::Impl for GoogleCloudPubSub {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         let config = Config::new(
             config
                 .as_ref()
                 .ok_or("Offramp Google Cloud Pubsub (pub) requires a config")?,
         )?;
         let hostport = "pubsub.googleapis.com:443";
-        Ok(SinkManager::new_box(Self {
+        Ok(SinkManager::new_box(GoogleCloudPubSub {
             config,
             remote_publisher: None,  // overwritten in init
             remote_subscriber: None, // overwritten in init

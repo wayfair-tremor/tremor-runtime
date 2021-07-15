@@ -79,11 +79,6 @@ error_chain! {
                 display("Unknown operator: {}::{}", n, o)
         }
 
-        MissingSteps(t: String) {
-            description("missing steps")
-                display("missing steps in: '{}'", t)
-        }
-
         BadOpConfig(e: String) {
             description("Operator config has a bad syntax")
                 display("Operator config has a bad syntax: {}", e)

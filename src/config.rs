@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use crate::url::TremorUrl;
+use either::Either;
 use hashbrown::HashMap;
 
 pub(crate) type Id = String;
 pub(crate) type OnRampVec = Vec<OnRamp>;
 pub(crate) type OffRampVec = Vec<OffRamp>;
+pub(crate) type ConnectorVec = Vec<Connector>;
 pub(crate) type BindingVec = Vec<Binding>;
 pub(crate) type BindingMap = HashMap<TremorUrl, Vec<TremorUrl>>;
 pub(crate) type MappingMap = HashMap<TremorUrl, HashMap<String, String>>;
@@ -30,6 +32,8 @@ pub struct Config {
     pub(crate) onramp: OnRampVec,
     #[serde(default = "Default::default")]
     pub(crate) offramp: OffRampVec,
+    #[serde(default = "Default::default")]
+    pub(crate) connector: ConnectorVec,
     #[serde(default = "Default::default")]
     pub(crate) binding: Vec<Binding>,
     #[serde(default = "Default::default")]
@@ -112,6 +116,144 @@ pub struct OffRamp {
     pub(crate) metrics_interval_s: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) config: tremor_pipeline::ConfigMap,
+}
+
+/// reconnect configuration, controlling the intervals and amound of retries
+/// if a connection attempt fails
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReconnectConfig {
+    #[serde(default = "ReconnectConfig::default_interval_ms")]
+    pub(crate) interval_ms: u64,
+    #[serde(default = "ReconnectConfig::default_growth_rate")]
+    pub(crate) growth_rate: f64,
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub(crate) max_retry: Option<u64>,
+}
+
+impl ReconnectConfig {
+    const DEFAULT_INTERVAL_MS: u64 = 1000;
+    const DEFAULT_GROWTH_RATE: f64 = 1.2;
+
+    // fn new(interval_ms: u64) -> Self {
+    //     Self {
+    //         interval_ms,
+    //         ..Self::default()
+    //     }
+    // }
+
+    fn default_interval_ms() -> u64 {
+        Self::DEFAULT_INTERVAL_MS
+    }
+
+    fn default_growth_rate() -> f64 {
+        Self::DEFAULT_GROWTH_RATE
+    }
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: Self::DEFAULT_INTERVAL_MS,
+            growth_rate: Self::DEFAULT_GROWTH_RATE,
+            max_retry: None,
+        }
+    }
+}
+
+/// how a connector behaves upon Pause or CB trigger events
+/// w.r.t maintaining its connection to the outside world (e.g. TCP connection, database connection)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PauseBehaviour {
+    /// close the connection
+    Close,
+    /// does not support Pause and throws an error if it is attempted
+    Error,
+    /// keep the connection open, this will possibly fill OS buffers and lead to sneaky errors once they run full
+    KeepOpen,
+}
+
+impl Default for PauseBehaviour {
+    fn default() -> Self {
+        Self::KeepOpen
+    }
+}
+
+/// Codec name and configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodecConfig {
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) config: tremor_pipeline::ConfigMap,
+}
+
+impl From<&str> for CodecConfig {
+    fn from(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            config: None,
+        }
+    }
+}
+
+/// Connector configuration - only the parts applicable to all connectors
+/// Specific parts are catched in the `config` map.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Connector {
+    /// connector identifier
+    pub id: Id,
+    #[serde(rename = "type")]
+    pub(crate) binding_type: String,
+
+    #[serde(default = "Default::default")]
+    pub(crate) description: String,
+
+    #[serde(
+        with = "either::serde_untagged_optional",
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default"
+    )]
+    pub(crate) codec: Option<Either<String, CodecConfig>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) config: tremor_pipeline::ConfigMap,
+
+    // TODO: interceptor chain or pre- and post-processors
+    /// mapping from mime-type to codec used to handle requests/responses
+    /// with this mime-type
+    ///
+    /// e.g.:
+    ///       codec_map:
+    ///         "application/json": "json"
+    ///         "text/plain": "string"
+    ///
+    /// A default builtin codec mapping is defined
+    /// for msgpack, json, yaml and plaintext codecs with the common mime-types
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub(crate) codec_map: Option<halfbrown::HashMap<String, Either<String, CodecConfig>>>,
+
+    // TODO: interceptors or configurable processors
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub(crate) preprocessors: Option<Vec<String>>,
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub(crate) postprocessors: Option<Vec<String>>,
+
+    #[serde(default)]
+    pub(crate) reconnect: ReconnectConfig,
+
+    #[serde(default)]
+    pub(crate) on_pause: PauseBehaviour,
+}
+
+impl Connector {
+    fn codec_config(&self) -> Option<CodecConfig> {
+        self.codec.map(|e| match e {
+            Either::Left(s) => CodecConfig::from(s.as_str()),
+            Either::Right(config) => config,
+        })
+    }
 }
 
 /// Configuration for a Binding

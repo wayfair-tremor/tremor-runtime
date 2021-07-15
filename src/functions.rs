@@ -24,6 +24,7 @@ use tremor_script::tremor_fn;
 ///  * if we can't load the registry
 pub fn load() -> Result<()> {
     let mut reg = FN_REGISTRY.lock()?;
+    crate::connectors::functions::load(&mut reg);
     install(&mut reg)
 }
 
@@ -32,8 +33,6 @@ pub fn load() -> Result<()> {
 /// # Errors
 ///  * if we can't install extensions
 pub fn install(reg: &mut Registry) -> Result<()> {
-    crate::connectors::otel::load(reg);
-
     reg.insert(tremor_fn!(system|instance(_context) {
         Ok(Value::from(instance!()))
     }))

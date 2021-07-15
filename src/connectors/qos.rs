@@ -16,24 +16,34 @@ use port_scanner::scan_port_addr;
 
 use crate::sink::prelude::*;
 
-pub(crate) fn ack(event: &mut Event) -> sink::Reply {
+/// create an `ack` insight from the given event
+/// The insight is reporting successful handling of the given event to upstream components (pipelines, operators, onramps, connectors).
+pub fn ack(event: &mut Event) -> sink::Reply {
     sink::Reply::Insight(event.insight_ack())
 }
 
-pub(crate) fn fail(event: &mut Event) -> sink::Reply {
+/// create a `fail` insight from the given event
+/// The insight is reporting failed handling of the given event to upstream components (pipelines, operators, onramps, connectors).
+pub fn fail(event: &mut Event) -> sink::Reply {
     sink::Reply::Insight(event.insight_fail())
 }
 
-pub(crate) fn close(event: &mut Event) -> sink::Reply {
+/// create a CB trigger/close insight for the given event
+/// The insight is reporting that the downstream components should not receive any further events.
+/// The circuit breaker for the following downstream components is _triggered_
+pub fn close(event: &mut Event) -> sink::Reply {
     sink::Reply::Insight(event.insight_trigger())
 }
 
-pub(crate) fn open(event: &mut Event) -> sink::Reply {
+/// create a CB restore/open insight for the given event
+/// The insight is reporting that the downstream components can now again receive events.
+/// The circuit breaker for the following downstream components is _restored_
+pub fn open(event: &mut Event) -> sink::Reply {
     sink::Reply::Insight(event.insight_restore())
 }
 
 /// Canary probe
-pub(crate) trait CanaryProbe: Send + Sync {
+pub trait CanaryProbe: Send + Sync {
     /// Executes a canary probe returning:
     /// * true - if the remote endpoint is accessible
     /// * false - if the remote endpoint is not contactable or accessible
@@ -43,7 +53,8 @@ pub(crate) trait CanaryProbe: Send + Sync {
     fn about(&self) -> String;
 }
 
-pub(crate) struct HostPortScanCanaryProbe {
+/// Canary probe for scanning a given `endpoint` for reachability
+pub struct HostPortScanCanaryProbe {
     endpoint: String,
 }
 
@@ -80,7 +91,8 @@ impl CanaryProbe for HostPortScanCanaryProbe {
 // }
 
 /// Failure detector
-pub(crate) trait FailureDetector: Send + Sync {
+pub trait FailureDetector: Send + Sync {
+    /// check if the remote endpoint is healthy or exhibits a failure
     fn chirp(&self) -> bool;
 
     /// Register failure of the remote endpoint
@@ -92,13 +104,14 @@ pub(crate) trait FailureDetector: Send + Sync {
     /// Register recovery of the remote endpoint
     fn restore(&mut self);
 
-    // Is the current disposition indicative that we are `down`
+    /// Is the current disposition indicative that we are `down`
     fn is_down(&self) -> bool;
 }
 
 impl dyn FailureDetector {
+    /// creates a `FailureDetector` for a given GRPC endpoint
     #[allow(dead_code)]
-    pub(crate) fn for_grpc_endpoint(hostport: String) -> GrpcEndpointSupervisor {
+    pub fn for_grpc_endpoint(hostport: String) -> GrpcEndpointSupervisor {
         GrpcEndpointSupervisor {
             canary: <dyn CanaryProbe>::with_host_port(hostport),
             is_down: false,
@@ -130,7 +143,8 @@ impl dyn FailureDetector {
 //     }
 // }
 
-pub(crate) struct GrpcEndpointSupervisor {
+/// Supervisor for a GRPC endpoint
+pub struct GrpcEndpointSupervisor {
     canary: Box<dyn CanaryProbe>,
     is_down: bool,
 }
@@ -162,7 +176,8 @@ impl FailureDetector for GrpcEndpointSupervisor {
     }
 }
 
-pub(crate) trait SinkQoS: Send + Sync {
+/// QoS checker for sinks
+pub trait SinkQoS: Send + Sync {
     /// Is this quality of service auto acknowledging?
     fn is_auto_acknowledging(&self) -> bool;
 
@@ -175,16 +190,17 @@ pub(crate) trait SinkQoS: Send + Sync {
     /// Probe availability
     fn probe(&mut self, ingest_ns: u64) -> bool;
 }
-
-pub(crate) struct QoSFacilities {}
+/// Gathering QoS Facilities
+pub struct QoSFacilities {}
 impl QoSFacilities {
     #[allow(dead_code)]
     fn best_effort() -> LossySinkQoS {
         LossySinkQoS {}
     }
 
+    /// returns a `RecoverableSinkQoS` for the given endpoint
     #[allow(dead_code)]
-    pub(crate) fn recoverable(endpoint: String) -> RecoverableSinkQoS {
+    pub fn recoverable(endpoint: String) -> RecoverableSinkQoS {
         let canary: Box<dyn CanaryProbe> = Box::new(HostPortScanCanaryProbe { endpoint });
         let supervisor = Box::new(GrpcEndpointSupervisor {
             canary,
@@ -198,7 +214,8 @@ impl QoSFacilities {
     }
 }
 
-pub(crate) struct LossySinkQoS {}
+/// QoS implementation not providing any actial QoS
+pub struct LossySinkQoS {}
 
 impl SinkQoS for LossySinkQoS {
     /// Auto-acknowledge is enabled
@@ -219,7 +236,8 @@ impl SinkQoS for LossySinkQoS {
     }
 }
 
-pub(crate) struct RecoverableSinkQoS {
+/// Recoverable Sink QoS
+pub struct RecoverableSinkQoS {
     interval: u64,
     epoch: u64,
     supervisor: Box<dyn FailureDetector>,

@@ -43,12 +43,13 @@ pub struct Config {
 
 impl ConfigImpl for Config {}
 
-impl offramp::Impl for File {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
 
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(File {
                 file: None,
                 config,
                 postprocessors: vec![],

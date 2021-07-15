@@ -25,9 +25,10 @@ pub struct Cb {}
 ///
 /// Examples: `{"cb": "ack"}` or `{"cb": ["fail", "close"]}`
 ///
-impl offramp::Impl for Cb {
-    fn from_config(_config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
-        Ok(SinkManager::new_box(Self {}))
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, _config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+        Ok(SinkManager::new_box(Cb {}))
     }
 }
 

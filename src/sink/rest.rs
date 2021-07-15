@@ -290,13 +290,14 @@ pub struct Rest {
     client: Client,
 }
 
-impl offramp::Impl for Rest {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
             let num_inflight_requests = Arc::new(AtomicMaxCounter::new(config.concurrency));
             let client = surf::client();
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Rest {
                 uid: 0,
                 sink_url: TremorUrl::from_offramp_id("rest")?, // dummy
                 config,

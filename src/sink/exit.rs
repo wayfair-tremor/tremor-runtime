@@ -22,15 +22,16 @@
 
 #![cfg(not(tarpaulin_include))]
 
-use crate::sink::prelude::*;
 use halfbrown::HashMap;
 use std::time::Duration;
+use crate::sink::prelude::*;
 
 pub struct Exit {}
 
-impl offramp::Impl for Exit {
-    fn from_config(_config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
-        Ok(SinkManager::new_box(Self {}))
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, _config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+        Ok(SinkManager::new_box(Exit {}))
     }
 }
 

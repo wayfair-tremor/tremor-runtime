@@ -93,8 +93,10 @@ impl Udp {
         Ok(())
     }
 }
-impl offramp::Impl for Udp {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let mut config: Config = Config::new(config)?;
             if !config.bound {
@@ -110,7 +112,7 @@ impl offramp::Impl for Udp {
                 config.bind.host = config.host;
                 config.host = dst_host;
             }
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Udp {
                 socket: None,
                 config,
                 postprocessors: vec![],

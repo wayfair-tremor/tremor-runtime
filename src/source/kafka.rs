@@ -13,7 +13,6 @@
 // limitations under the License.
 #![cfg(not(tarpaulin_include))]
 
-use crate::errors::Result;
 use crate::source::prelude::*;
 
 //NOTE: This is required for StreamHandlers stream
@@ -262,11 +261,12 @@ impl Int {
     }
 }
 
-impl onramp::Impl for Kafka {
-    fn from_config(id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
+pub(crate) struct Builder {}
+impl onramp::Builder for Builder {
+    fn from_config(&self, id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
-            Ok(Box::new(Self {
+            Ok(Box::new(Kafka {
                 config,
                 onramp_id: id.clone(),
             }))
@@ -493,7 +493,11 @@ impl Source for Int {
             path: vec![],
         };
 
-        info!("[Source::{}] Starting kafka onramp", self.onramp_id);
+        let (version_n, version_s) = rdkafka::util::get_rdkafka_version();
+        info!(
+            "[Source::{}] Starting kafka onramp with rdkafka 0x{:08x}, {}",
+            self.onramp_id, version_n, version_s
+        );
         // Setting up the configuration with default and then overwriting
         // them with custom settings.
         //

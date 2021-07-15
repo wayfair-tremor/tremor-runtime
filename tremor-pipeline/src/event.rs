@@ -14,8 +14,13 @@
 
 use crate::{CbAction, EventId, OpMeta, SignalKind};
 use std::mem::swap;
+use tremor_common::time::nanotime;
 use tremor_script::prelude::*;
+<<<<<<< HEAD
 use tremor_script::{EventOriginUri, EventPayload, Value};
+=======
+use tremor_script::{literal, EventOriginUri, LineValue, Value};
+>>>>>>> 89b779cc (Sink event handling (yet unfinished))
 
 /// A tremor event
 #[derive(
@@ -44,6 +49,15 @@ pub struct Event {
 }
 
 impl Event {
+    /// create a tick signal event
+    pub fn signal_tick() -> Self {
+        Self {
+            ingest_ns: nanotime(),
+            kind: Some(SignalKind::Tick),
+            ..Self::default()
+        }
+    }
+
     /// turns the event in an insight given it's success
     #[must_use]
     pub fn insight(self, success: bool) -> Event {
@@ -69,61 +83,50 @@ impl Event {
 
     /// Creates either a ack or fail event
     #[must_use]
-    pub fn ack_or_fail(ack: bool, ingest_ns: u64, ids: EventId) -> Self {
+    pub fn ack_or_fail(ack: bool, ingest_ns: u64, ids: EventId, op_meta: OpMeta) -> Self {
         if ack {
-            Event::cb_ack(ingest_ns, ids)
+            Event::cb_ack(ingest_ns, ids, op_meta)
         } else {
-            Event::cb_fail(ingest_ns, ids)
+            Event::cb_fail(ingest_ns, ids, op_meta)
         }
     }
 
-    /// Creates a new ack insight from the event, consumes the `op_meta` and
-    /// `origin_uri` of the event
+    /// Creates a new ack insight from the event
     #[must_use]
-    pub fn insight_ack(&mut self) -> Event {
-        let mut e = Event::cb_ack(self.ingest_ns, self.id.clone());
-        swap(&mut e.op_meta, &mut self.op_meta);
-        swap(&mut e.origin_uri, &mut self.origin_uri);
-        e
+    pub fn insight_ack(&self) -> Event {
+        Event::cb_ack(self.ingest_ns, self.id.clone(), self.op_meta.clone())
     }
 
     /// produce a `CBAction::Ack` insight event with the given time (in ms) in the metadata
     #[must_use]
     pub fn insight_ack_with_timing(&mut self, processing_time: u64) -> Event {
         let mut e = self.insight_ack();
-        let mut meta = Object::with_capacity(1);
-        meta.insert("time".into(), Value::from(processing_time));
-        e.data = (Value::null(), Value::from(meta)).into();
+        e.data = (Value::null(), literal!({ "time": processing_time })).into();
         e
     }
 
-    /// Creates a new fail insight from the event, consumes the `op_meta` and `origin_uri` of the
+    /// Creates a new fail insight from the event, consumes the `op_meta` of the
     /// event
     #[must_use]
-    pub fn insight_fail(&mut self) -> Event {
-        let mut e = Event::cb_fail(self.ingest_ns, self.id.clone());
-        swap(&mut e.op_meta, &mut self.op_meta);
-        swap(&mut e.origin_uri, &mut self.origin_uri);
-        e
+    pub fn insight_fail(&self) -> Event {
+        Event::cb_fail(self.ingest_ns, self.id.clone(), self.op_meta.clone())
     }
 
-    /// Creates a restore insight from the event, consumes the `op_meta` and `origin_uri` of the
+    /// Creates a restore insight from the event, consumes the `op_meta` of the
     /// event
     #[must_use]
     pub fn insight_restore(&mut self) -> Event {
         let mut e = Event::cb_restore(self.ingest_ns);
         swap(&mut e.op_meta, &mut self.op_meta);
-        swap(&mut e.origin_uri, &mut self.origin_uri);
         e
     }
 
-    /// Creates a trigger insight from the event, consums the `op_meta` and `origin_uri` of the
+    /// Creates a trigger insight from the event, consums the `op_meta` of the
     /// event
     #[must_use]
     pub fn insight_trigger(&mut self) -> Event {
         let mut e = Event::cb_trigger(self.ingest_ns);
         swap(&mut e.op_meta, &mut self.op_meta);
-        swap(&mut e.origin_uri, &mut self.origin_uri);
         e
     }
 
@@ -159,22 +162,24 @@ impl Event {
 
     /// Creates a new event to trigger a CB
     #[must_use]
-    pub fn cb_ack(ingest_ns: u64, id: EventId) -> Self {
+    pub fn cb_ack(ingest_ns: u64, id: EventId, op_meta: OpMeta) -> Self {
         Event {
             ingest_ns,
             id,
             cb: CbAction::Ack,
+            op_meta,
             ..Event::default()
         }
     }
 
     /// Creates a new event to trigger a CB
     #[must_use]
-    pub fn cb_fail(ingest_ns: u64, id: EventId) -> Self {
+    pub fn cb_fail(ingest_ns: u64, id: EventId, op_meta: OpMeta) -> Self {
         Event {
             ingest_ns,
             id,
             cb: CbAction::Fail,
+            op_meta,
             ..Event::default()
         }
     }
@@ -185,8 +190,7 @@ impl Event {
         Event {
             id: self.id.clone(),
             ingest_ns: self.ingest_ns,
-            op_meta: self.op_meta.clone(),
-            origin_uri: self.origin_uri.clone(),
+            op_meta: self.op_meta.clone(),,
             cb: CbAction::Fail,
             ..Event::default()
         }
@@ -199,7 +203,6 @@ impl Event {
             id: self.id.clone(),
             ingest_ns: self.ingest_ns,
             op_meta: self.op_meta.clone(),
-            origin_uri: self.origin_uri.clone(),
             cb: CbAction::Ack,
             ..Event::default()
         }
@@ -409,17 +412,17 @@ mod test {
         assert_eq!(e.clone().insight(false).cb, CbAction::Fail);
 
         assert_eq!(
-            Event::ack_or_fail(true, 0, EventId::default()).cb,
+            Event::ack_or_fail(true, 0, EventId::default(), OpMeta::default()).cb,
             CbAction::Ack
         );
-        assert_eq!(Event::cb_ack(0, EventId::default()).cb, CbAction::Ack);
+        assert_eq!(Event::cb_ack(0, EventId::default(), OpMeta::default()).cb, CbAction::Ack);
         assert_eq!(e.insight_ack().cb, CbAction::Ack);
 
         assert_eq!(
-            Event::ack_or_fail(false, 0, EventId::default()).cb,
+            Event::ack_or_fail(false, 0, EventId::default(), OpMeta::default()).cb,
             CbAction::Fail
         );
-        assert_eq!(Event::cb_fail(0, EventId::default()).cb, CbAction::Fail);
+        assert_eq!(Event::cb_fail(0, EventId::default(), OpMeta::default()).cb, CbAction::Fail);
         assert_eq!(e.insight_fail().cb, CbAction::Fail);
 
         let mut clone = e.clone();

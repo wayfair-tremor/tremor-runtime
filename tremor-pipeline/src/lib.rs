@@ -145,6 +145,9 @@ where
 #[derive(
     Clone, Debug, Default, PartialEq, simd_json_derive::Serialize, simd_json_derive::Deserialize,
 )]
+// TODO: optimization: - use two Vecs, one for operator ids, one for operator metadata (Values)
+//                     - make it possible to trace operators with and without metadata
+//                     - insert with bisect (numbers of operators tracked will be low single digit numbers most of the time)
 pub struct OpMeta(BTreeMap<PrimStr<u64>, OwnedValue>);
 
 impl OpMeta {
@@ -231,6 +234,7 @@ pub enum CbAction {
     Close,
     /// The circuit breaker is restored and should work again
     Open,
+    // TODO: add stream based CbAction variants once their use manifests
     /// Acknowledge delivery of messages up to a given ID.
     /// All messages prior to and including  this will be considered delivered.
     Ack,
@@ -488,6 +492,34 @@ impl EventId {
                 .map(|teid| (teid.stream_id, teid.max_event_id))
         }
     }
+
+    /// get all streams for a source_id
+    pub fn get_streams(&self, source_id: u64) -> Vec<u64> {
+        let mut v = Vec::with_capacity(4);
+        if self.source_id == source_id {
+            v.push(self.stream_id);
+        }
+        let iter = self
+            .tracked_event_ids
+            .iter()
+            .filter(|tids| tids.source_id == source_id)
+            .map(|tids| tids.stream_id);
+        v.extend(iter);
+        v
+    }
+
+    /// get a stream id for the given `source_id`
+    /// will favor the events own stream id, will also look into tracked event ids and return the first it finds
+    pub fn get_stream(&self, source_id: u64) -> Option<u64> {
+        if self.source_id == source_id {
+            Some(self.stream_id)
+        } else {
+            self.tracked_event_ids
+                .iter()
+                .find(|tids| tids.source_id == source_id)
+                .map(|tids| tids.stream_id)
+        }
+    }
 }
 
 impl From<(u64, u64, u64)> for EventId {
@@ -675,7 +707,7 @@ impl EventIdGenerator {
 )]
 pub enum SignalKind {
     // Lifecycle
-    /// Init singnal
+    /// Init signal
     Init,
     /// Shutdown Signal
     Shutdown,
@@ -905,5 +937,18 @@ mod test {
 
         teid2.track_id(0);
         assert_eq!(teid2.min_event_id, 0);
+    }
+
+    #[test]
+    fn stream_ids() {
+        let source = 1_u64;
+        let mut eid = EventId::from((source, 1, 0));
+        assert_eq!(vec![1], eid.get_streams(source));
+        assert!(eid.get_streams(2).is_empty());
+
+        eid.track_id(source, 2, 1);
+        eid.track_id(2, 1, 42);
+        assert_eq!(vec![1, 2], eid.get_streams(source));
+        assert_eq!(vec![1], eid.get_streams(2));
     }
 }

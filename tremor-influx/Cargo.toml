@@ -5,6 +5,7 @@ edition = "2018"
 license = "Apache-2.0"
 name = "tremor-influx"
 readme = "README.md"
+repository = "https://github.com/tremor-rs/tremor-runtime"
 version = "0.3.2"
 
 [package.metadata.docs.rs]

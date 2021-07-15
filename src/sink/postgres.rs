@@ -22,7 +22,7 @@
 //!
 //! See [Config](struct.Config.html) for details.
 
-use crate::ramp::postgres::{json_to_record, Record};
+use crate::common::postgres::{json_to_record, Record};
 use crate::sink::prelude::*;
 use halfbrown::HashMap;
 use postgres::{Client, NoTls};
@@ -44,12 +44,13 @@ pub struct Config {
 
 impl ConfigImpl for Config {}
 
-impl offramp::Impl for Postgres {
-    fn from_config(config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
 
-            Ok(SinkManager::new_box(Self {
+            Ok(SinkManager::new_box(Postgres {
                 config,
                 client: None,
             }))

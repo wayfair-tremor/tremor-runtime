@@ -26,6 +26,7 @@
 
 use crate::errors::{ErrorKind, Result};
 use crate::op::prelude::*;
+use beef::Cow;
 use tremor_script::prelude::*;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +88,8 @@ if let Some(map) = &node.config {
 
 }});
 
+const OVERFLOW: Cow<'static, str> = Cow::const_str("overflow");
+
 impl Operator for RoundRobin {
     fn on_event(
         &mut self,
@@ -111,7 +114,7 @@ impl Operator for RoundRobin {
             event.op_meta.insert(uid, oid);
             Ok(vec![(out.into(), event)].into())
         } else {
-            Ok(vec![("overflow".into(), event)].into())
+            Ok(vec![(OVERFLOW, event)].into())
         }
     }
 
@@ -147,6 +150,7 @@ impl Operator for RoundRobin {
         } = *self;
 
         let any_were_available = outputs.iter().any(|o| o.open);
+        // trace an output via the contraflow op_meta
         if let Some(o) = insight
             .op_meta
             .get(uid)

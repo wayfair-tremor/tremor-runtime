@@ -23,10 +23,10 @@
 
 #![cfg(not(tarpaulin_include))]
 
-use crate::sink::prelude::*;
 use async_std::io;
 use halfbrown::HashMap;
 use std::time::{Duration, Instant};
+use crate::sink::prelude::*;
 
 #[derive(Debug, Clone)]
 struct DebugBucket {
@@ -40,10 +40,10 @@ pub struct Debug {
     cnt: u64,
     stdout: io::Stdout,
 }
-
-impl offramp::Impl for Debug {
-    fn from_config(_config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
-        Ok(SinkManager::new_box(Self {
+pub(crate) struct Builder {}
+impl offramp::Builder for Builder {
+    fn from_config(&self, _config: &Option<OpConfig>) -> Result<Box<dyn Offramp>> {
+        Ok(SinkManager::new_box(Debug {
             last: Instant::now(),
             update_time: Duration::from_secs(1),
             buckets: HashMap::new(),

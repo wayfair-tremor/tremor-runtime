@@ -21,14 +21,17 @@ use crate::repository::{
 };
 use crate::url::ports::METRICS;
 use crate::url::TremorUrl;
+use crate::OpConfig;
 use async_channel::bounded;
 use async_std::io::prelude::*;
 use async_std::path::Path;
 use async_std::task::{self, JoinHandle};
 use hashbrown::HashMap;
+use std::time::Duration;
 use tremor_common::asy::file;
 use tremor_common::time::nanotime;
 
+pub(crate) use crate::connectors;
 pub(crate) use crate::offramp;
 pub(crate) use crate::onramp;
 pub(crate) use crate::pipeline;
@@ -58,18 +61,26 @@ lazy_static! {
 
 /// This is control plane
 pub(crate) enum ManagerMsg {
-    CreatePipeline(
-        async_channel::Sender<Result<pipeline::Addr>>,
-        pipeline::Create,
-    ),
-    CreateOnramp(
-        async_channel::Sender<Result<onramp::Addr>>,
-        Box<onramp::Create>,
-    ),
-    CreateOfframp(
-        async_channel::Sender<Result<offramp::Addr>>,
-        Box<offramp::Create>,
-    ),
+    Pipeline(pipeline::ManagerMsg),
+    // CreatePipeline(
+    //     async_channel::Sender<Result<pipeline::Addr>>,
+    //     pipeline::Create,
+    // ),
+    Onramp(onramp::ManagerMsg),
+    // CreateOnramp(
+    //     async_channel::Sender<Result<onramp::Addr>>,
+    //     Box<onramp::Create>,
+    // ),
+    Offramp(offramp::ManagerMsg),
+    // CreateOfframp(
+    //     async_channel::Sender<Result<offramp::Addr>>,
+    //     Box<offramp::Create>,
+    // ),
+    Connector(connectors::ManagerMsg),
+    // CreateConnector(
+    //     async_channel::Sender<Result<connectors::Addr>>,
+    //     connectors::Create,
+    // ),
     Stop,
 }
 
@@ -77,9 +88,11 @@ pub(crate) type Sender = async_channel::Sender<ManagerMsg>;
 
 #[derive(Debug)]
 pub(crate) struct Manager {
+    pub connector: connectors::Sender,
     pub offramp: offramp::Sender,
     pub onramp: onramp::Sender,
     pub pipeline: pipeline::Sender,
+    pub connector_h: JoinHandle<Result<()>>,
     pub offramp_h: JoinHandle<Result<()>>,
     pub onramp_h: JoinHandle<Result<()>>,
     pub pipeline_h: JoinHandle<Result<()>>,
@@ -92,17 +105,10 @@ impl Manager {
         let system_h = task::spawn(async move {
             while let Ok(msg) = rx.recv().await {
                 match msg {
-                    ManagerMsg::CreatePipeline(r, c) => {
-                        self.pipeline
-                            .send(pipeline::ManagerMsg::Create(r, Box::new(c)))
-                            .await?
-                    }
-                    ManagerMsg::CreateOnramp(r, c) => {
-                        self.onramp.send(onramp::ManagerMsg::Create(r, c)).await?
-                    }
-                    ManagerMsg::CreateOfframp(r, c) => {
-                        self.offramp.send(offramp::ManagerMsg::Create(r, c)).await?
-                    }
+                    ManagerMsg::Pipeline(msg) => self.pipeline.send(msg).await?,
+                    ManagerMsg::Onramp(msg) => self.onramp.send(msg).await?,
+                    ManagerMsg::Offramp(msg) => self.offramp.send(msg).await?,
+                    ManagerMsg::Connector(msg) => self.connector.send(msg).await?,
                     ManagerMsg::Stop => {
                         info!("Stopping offramps...");
                         self.offramp.send(offramp::ManagerMsg::Stop).await?;
@@ -110,6 +116,12 @@ impl Manager {
                         self.pipeline.send(pipeline::ManagerMsg::Stop).await?;
                         info!("Stopping onramps...");
                         self.onramp.send(onramp::ManagerMsg::Stop).await?;
+                        info!("Stopping connectors...");
+                        self.connector
+                            .send(connectors::ManagerMsg::Stop {
+                                reason: "Global Manager Stop".to_string(),
+                            })
+                            .await?;
                         break;
                     }
                 }
@@ -133,6 +145,153 @@ pub struct World {
 }
 
 impl World {
+    /// Registers the given builtin onramp type with `type_name` and the corresponding `builder` to instantiate new onramps
+    pub(crate) async fn register_builtin_onramp_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn onramp::Builder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Onramp(onramp::ManagerMsg::Register {
+                onramp_type: type_name.to_string(),
+                builder,
+                builtin: true,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// Registers the given onramp type with `type_name` and the corresponding `builder` to instantiate new onramps
+    pub async fn register_onramp_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn onramp::Builder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Onramp(onramp::ManagerMsg::Register {
+                onramp_type: type_name.to_string(),
+                builder,
+                builtin: false,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// unregister onramp type
+    pub async fn unregister_onramp_type(&self, type_name: String) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Onramp(onramp::ManagerMsg::Unregister(
+                type_name,
+            )))
+            .await?;
+        Ok(())
+    }
+
+    /// returns true if the runtime currently supports the given onramp type
+    pub async fn has_onramp_type(&self, type_name: String) -> Result<bool> {
+        let (tx, rx) = bounded(1);
+        self.system
+            .send(ManagerMsg::Onramp(onramp::ManagerMsg::TypeExists(
+                type_name, tx,
+            )))
+            .await?;
+        Ok(rx.recv().await?)
+    }
+
+    /// Registers the given builtin offramp type with `type_name` and the corresponding `builder` to instantiate new offramps
+    pub(crate) async fn register_builtin_offramp_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn offramp::Builder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Offramp(offramp::ManagerMsg::Register {
+                offramp_type: type_name.to_string(),
+                builder,
+                builtin: true,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// Registers the given offramp type with `type_name` and the corresponding `builder` to instantiate new offramps
+    pub async fn register_offramp_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn offramp::Builder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Offramp(offramp::ManagerMsg::Register {
+                offramp_type: type_name.to_string(),
+                builder,
+                builtin: false,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// unregister offramp type
+    pub async fn unregister_offramp_type(&self, type_name: String) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Offramp(offramp::ManagerMsg::Unregister(
+                type_name,
+            )))
+            .await?;
+        Ok(())
+    }
+
+    /// returns true if the runtime currently supports the given offramp type
+    pub async fn has_offramp_type(&self, type_name: String) -> Result<bool> {
+        let (tx, rx) = bounded(1);
+        self.system
+            .send(ManagerMsg::Offramp(offramp::ManagerMsg::TypeExists(
+                type_name, tx,
+            )))
+            .await?;
+        Ok(rx.recv().await?)
+    }
+
+    /// Registers the given connector type with `type_name` and the corresponding `builder`
+    pub async fn register_builtin_connector_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn connectors::ConnectorBuilder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Connector(connectors::ManagerMsg::Register {
+                connector_type: type_name.to_string(),
+                builder,
+                builtin: true,
+            }))
+            .await?;
+        Ok(())
+    }
+    /// Registers the given connector type with `type_name` and the corresponding `builder`
+    pub async fn register_connector_type(
+        &self,
+        type_name: &'static str,
+        builder: Box<dyn connectors::ConnectorBuilder>,
+    ) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Connector(connectors::ManagerMsg::Register {
+                connector_type: type_name.to_string(),
+                builder,
+                builtin: false,
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// unregister a connector type
+    pub async fn unregister_connector_type(&self, type_name: String) -> Result<()> {
+        self.system
+            .send(ManagerMsg::Connector(connectors::ManagerMsg::Unregister(
+                type_name,
+            )))
+            .await?;
+        Ok(())
+    }
+
     /// Ensures the existance of an onramp, creating it if required.
     ///
     /// # Errors
@@ -587,6 +746,7 @@ impl World {
         let config = crate::config::Config {
             onramp,
             offramp,
+            connector: vec![],
             binding,
             mapping,
         };
@@ -650,14 +810,17 @@ impl World {
         qsize: usize,
         storage_directory: Option<String>,
     ) -> Result<(Self, JoinHandle<Result<()>>)> {
+        let (connector_h, connector) = connectors::Manager::new(qsize).start();
         let (onramp_h, onramp) = onramp::Manager::new(qsize).start();
         let (offramp_h, offramp) = offramp::Manager::new(qsize).start();
         let (pipeline_h, pipeline) = pipeline::Manager::new(qsize).start();
 
         let (system_h, system) = Manager {
+            connector,
             offramp,
             onramp,
             pipeline,
+            connector_h,
             offramp_h,
             onramp_h,
             pipeline_h,
@@ -673,6 +836,10 @@ impl World {
             reg,
             storage_directory,
         };
+
+        crate::sink::register_builtin_sinks(&world).await?;
+        crate::source::register_builtin_sources(&world).await?;
+        crate::connectors::register_builtin_connectors(&world).await?;
 
         world.register_system().await?;
         Ok((world, system_h))
@@ -754,11 +921,47 @@ type: stderr
     ) -> Result<pipeline::Addr> {
         let (tx, rx) = bounded(1);
         self.system
-            .send(ManagerMsg::CreatePipeline(
+            .send(ManagerMsg::Pipeline(pipeline::ManagerMsg::Create(
                 tx,
                 pipeline::Create { config, id },
-            ))
+            )))
             .await?;
         rx.recv().await?
+    }
+
+    /// convenience wrapper for instantiating an offramp from a given config
+    pub(crate) async fn instantiate_offramp(
+        &self,
+        offramp_type: String,
+        config: Option<OpConfig>,
+        timeout: Duration,
+    ) -> Result<Box<dyn offramp::Offramp>> {
+        let (tx, rx) = bounded(1);
+        let msg = offramp::ManagerMsg::Instantiate {
+            offramp_type,
+            config,
+            sender: tx,
+        };
+        self.system.send(ManagerMsg::Offramp(msg)).await?;
+        async_std::future::timeout(timeout, rx.recv()).await??
+    }
+    // TODO: start_offramp method
+
+    pub(crate) async fn instantiate_onramp(
+        &self,
+        onramp_type: String,
+        url: TremorUrl,
+        config: Option<OpConfig>,
+        timeout: Duration,
+    ) -> Result<Box<dyn onramp::Onramp>> {
+        let (tx, rx) = bounded(1);
+        let msg = onramp::ManagerMsg::Instantiate {
+            onramp_type,
+            url,
+            config,
+            sender: tx,
+        };
+        self.system.send(ManagerMsg::Onramp(msg)).await?;
+        async_std::future::timeout(timeout, rx.recv()).await??
     }
 }

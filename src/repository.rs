@@ -32,6 +32,7 @@ pub use crate::registry::ServantId;
 pub use artefact::Binding as BindingArtefact;
 pub(crate) use artefact::OfframpArtefact;
 pub(crate) use artefact::OnrampArtefact;
+pub(crate) use artefact::ConnectorArtefact;
 /// A pipeline artefact
 pub use artefact::Pipeline as PipelineArtefact;
 pub(crate) use artefact::{Artefact, Id as ArtefactId};

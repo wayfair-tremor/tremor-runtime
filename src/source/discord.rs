@@ -122,9 +122,9 @@ impl From<Intents> for GatewayIntents {
         }
     }
 }
-
-impl onramp::Impl for Discord {
-    fn from_config(id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
+pub(crate) struct Builder {}
+impl onramp::Builder for Builder {
+    fn from_config(&self, id: &TremorUrl, config: &Option<YamlValue>) -> Result<Box<dyn Onramp>> {
         if let Some(config) = config {
             let config: Config = Config::new(config)?;
             let origin_uri = EventOriginUri {
@@ -135,7 +135,7 @@ impl onramp::Impl for Discord {
                 path: vec![],
             };
 
-            Ok(Box::new(Self {
+            Ok(Box::new(Discord {
                 origin_uri,
                 config,
                 onramp_id: id.clone(),
