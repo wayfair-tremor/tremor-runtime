@@ -95,11 +95,10 @@ pub trait Codec: Send + Sync {
     fn boxed_clone(&self) -> Box<dyn Codec>;
 }
 
-/// Codec lookup function
+/// Lookup a codec from config
 ///
 /// # Errors
 ///  * if the codec doesn't exist
-// TODO: make use of config
 pub fn lookup_with_config(config: &CodecConfig) -> Result<Box<dyn Codec>> {
     match config.name.as_str() {
         "json" => Ok(Box::new(json::Json::<json::Unsorted>::default())),
@@ -112,24 +111,27 @@ pub fn lookup_with_config(config: &CodecConfig) -> Result<Box<dyn Codec>> {
         "statsd" => Ok(Box::new(statsd::StatsD {})),
         "yaml" => Ok(Box::new(yaml::Yaml {})),
         "binary" => Ok(Box::new(binary::Binary {})),
-<<<<<<< HEAD
         "syslog" => Ok(Box::new(syslog::Syslog::utcnow())),
-        _ => Err(format!("Codec '{}' not found.", name).into()),
-=======
-        "syslog" => Ok(Box::new(syslog::Syslog {})),
-        _ => Err(ErrorKind::CodecNotFound(config.name).into()),
+        s => Err(ErrorKind::CodecNotFound(s.into()).into()),
     }
 }
 
+/// lookup a codec by name
+///
+/// # Errors
+///  * if the codec doesn't exist
 pub fn lookup(name: &str) -> Result<Box<dyn Codec>> {
     lookup_with_config(&CodecConfig::from(name))
 }
 
+/// resolve a codec from either a codec name of a full-blown config
+///
+/// # Errors
+///  * if the codec doesn't exist
 pub fn resolve(config: &Either<String, CodecConfig>) -> Result<Box<dyn Codec>> {
     match config {
         Either::Left(name) => lookup(name.as_str()),
         Either::Right(config) => lookup_with_config(&config),
->>>>>>> 89b779cc (Sink event handling (yet unfinished))
     }
 }
 

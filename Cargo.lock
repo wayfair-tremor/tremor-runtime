@@ -4557,6 +4557,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rental"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc89fe2acac36d212474d138aaf939c04a82df5b61d07011571ebce5aef81f2e"
+dependencies = [
+ "rental-impl",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "rental-impl"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "475e68978dc5b743f2f40d8e0a8fdc83f1c5e78cbf4b8fa5e74e73beebc340de"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.9",
+ "syn 1.0.73",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.9.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6554,6 +6575,7 @@ dependencies = [
  "rdkafka",
  "rdkafka-sys",
  "regex",
+ "rental",
  "reqwest 0.11.4",
  "rmp-serde",
  "rustls 0.19.1",

@@ -29,6 +29,8 @@ use either::Either;
 use hashbrown::HashMap;
 use simd_json::ValueAccess;
 use std::borrow::Borrow;
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
 use std::hash::Hash;
 use tremor_common::time::nanotime;
 use tremor_pipeline::{CbAction, Event, EventId, OpMeta, SignalKind, DEFAULT_STREAM_ID};
@@ -47,6 +49,31 @@ pub enum SinkReply {
     Fail,
     /// the whole sink became unavailable or available again
     CB(CbAction),
+}
+
+/// some basic Event data needed for generating correct contraflow messages
+#[derive(Clone, Debug)]
+pub struct EventCfData {
+    event_id: EventId,
+    ingest_ns: u64,
+    op_meta: OpMeta,
+}
+
+impl From<&Event> for EventCfData {
+    fn from(event: &Event) -> Self {
+        Self {
+            event_id: event.id.clone(),
+            ingest_ns: event.ingest_ns,
+            op_meta: event.op_meta.clone(),
+        }
+    }
+}
+
+/// Possible replies from asynchronous sinks via reply_channel from event or signal handling
+pub enum AsyncSinkReply {
+    Ack(EventCfData, u64),
+    Fail(EventCfData),
+    CB(EventCfData, CbAction),
 }
 
 /// Result for a sink function that may provide insights or response.
@@ -69,6 +96,7 @@ pub trait Sink: Send {
         event: Event,
         ctx: &SinkContext,
         serializer: &mut EventSerializer,
+        start: u64,
     ) -> ResultVec;
     /// called when receiving a signal
     async fn on_signal(
@@ -95,7 +123,7 @@ pub trait Sink: Send {
     async fn on_connection_established(&mut self, _ctx: &mut SinkContext) {}
 
     /// if `true` events are acknowledged/failed automatically by the sink manager.
-    /// Such sinks should return SinkReply::None from on_event.
+    /// Such sinks should return SinkReply::None from on_event or SinkReply::Fail if they fail immediately.
     ///
     /// if `false` events need to be acked/failed manually by the sink impl
     fn auto_ack(&self) -> bool {
@@ -114,8 +142,10 @@ pub trait Sink: Send {
 pub struct SinkData {
     /// data to send
     pub data: Vec<Vec<u8>>,
-    /// numeric event id
-    pub event_id: u64,
+    /// async reply utils (if required)
+    pub contraflow: Option<(EventCfData, Sender<AsyncSinkReply>)>,
+    /// timestamp of processing start
+    pub start: u64,
 }
 
 /// messages a channel sink can receive
@@ -147,6 +177,7 @@ where
     resolver: F,
     tx: Sender<ChannelSinkMsg<T>>,
     rx: Receiver<ChannelSinkMsg<T>>,
+    reply_tx: Sender<AsyncSinkReply>,
 }
 
 impl<T, F> ChannelSink<T, F>
@@ -155,7 +186,7 @@ where
     F: Fn(&Value<'_>) -> Option<T>,
 {
     /// constructor
-    pub fn new(qsize: usize, resolver: F) -> Self {
+    pub fn new(qsize: usize, resolver: F, reply_tx: Sender<AsyncSinkReply>) -> Self {
         let (tx, rx) = bounded(qsize);
         let streams = HashMap::with_capacity(8);
         let streams_meta = BiMap::with_capacity(8);
@@ -165,6 +196,7 @@ where
             streams,
             streams_meta,
             resolver,
+            reply_tx,
         }
     }
 
@@ -255,12 +287,14 @@ where
     T: Hash + Eq + Send + Sync,
     F: (Fn(&Value<'_>) -> Option<T>) + Send + Sync,
 {
+    /// FIXME: use reply_channel to only ack delivery once it is successfully sent via TCP
     async fn on_event(
         &mut self,
         _input: &str,
         event: Event,
         ctx: &SinkContext,
         serializer: &mut EventSerializer,
+        start: u64,
     ) -> ResultVec {
         // clean up
         // make sure channels for the given event are added to avoid stupid errors
@@ -268,12 +302,18 @@ where
         let empty = self.handle_channels_quickly(serializer);
         if empty {
             // no streams available :sob:
-            return Ok(vec![SinkReply::Fail, SinkReply::CB(CbReply::Triggered)]);
+            return Ok(vec![SinkReply::Fail, SinkReply::CB(CbAction::Close)]);
         }
 
         let ingest_ns = event.ingest_ns;
-        let id = &event.id;
-        let stream_ids = id.get_streams(ctx.uid);
+        let stream_ids = event.id.get_streams(ctx.uid);
+
+        let contraflow_utils = if event.transactional {
+            Some((EventCfData::from(&event), self.reply_tx.clone()))
+        } else {
+            None
+        };
+
         let mut res = Vec::with_capacity(event.len());
         for (value, meta) in event.value_meta_iter() {
             let mut errored = false;
@@ -283,7 +323,7 @@ where
             // resolve by checking meta for sink specific metadata
             // fallback: get all tracked stream_ids for the current connector uid
             //
-            let mut streams = if let Some(stream) = self.resolve_stream_from_meta(meta, ctx) {
+            let streams = if let Some(stream) = self.resolve_stream_from_meta(meta, ctx) {
                 Either::Left(std::iter::once(stream))
             } else {
                 Either::Right(
@@ -292,12 +332,12 @@ where
                         .filter_map(|sid| self.streams.get(sid).map(|sender| (sid, sender))),
                 )
             };
-
             for (stream_id, sender) in streams {
-                let data = serializer.serialize_stream(value, ingest_ns, *stream_id)?;
+                let data = serializer.serialize_for_stream(value, ingest_ns, *stream_id)?;
                 let sink_data = SinkData {
                     data,
-                    event_id: id.event_id(),
+                    contraflow: contraflow_utils.clone(),
+                    start,
                 };
                 found = true;
                 if let Err(_) = sender.send(sink_data).await {
@@ -313,11 +353,13 @@ where
             res.push(if errored || !found {
                 SinkReply::Fail
             } else {
-                SinkReply::Ack
+                // ack is sent when channel has delivered serialized event asynchronously
+                SinkReply::None
             });
             for stream_id in remove_streams {
                 self.remove_stream(stream_id);
                 serializer.drop_stream(stream_id);
+                // TODO: stream based CB
             }
         }
         Ok(res)
@@ -336,7 +378,12 @@ where
     }
 
     fn asynchronous(&self) -> bool {
-        // TODO:
+        // events are delivered asynchronously on their stream tasks
+        true
+    }
+
+    fn auto_ack(&self) -> bool {
+        // we handle ack/fail in the asynchronous streams
         false
     }
 }
@@ -395,7 +442,7 @@ pub enum SinkMsg {
 /// Wrapper around all possible sink messages
 /// handled in the Sink task
 enum SinkMsgWrapper {
-    FromSink(SinkReply),
+    FromSink(AsyncSinkReply),
     ToSink(SinkMsg),
 }
 
@@ -406,17 +453,18 @@ pub struct SinkAddr {
     pub addr: async_channel::Sender<SinkMsg>,
 }
 
-pub(crate) struct SinkManagerBuilder {
+pub struct SinkManagerBuilder {
     qsize: usize,
     serializer: EventSerializer,
     reply_channel: (
-        async_channel::Sender<SinkReply>,
-        async_channel::Receiver<SinkReply>,
+        async_channel::Sender<AsyncSinkReply>,
+        async_channel::Receiver<AsyncSinkReply>,
     ),
 }
 
 impl SinkManagerBuilder {
-    pub(crate) fn qsize(&self) -> usize {
+    /// globally configured queue size
+    pub fn qsize(&self) -> usize {
         self.qsize
     }
 
@@ -424,11 +472,12 @@ impl SinkManagerBuilder {
     ///
     /// This is especially useful if your sink handles events asynchronously
     /// and you can't reply immediately.
-    pub(crate) fn reply_tx(&self) -> async_channel::Sender<SinkReply> {
+    pub fn reply_tx(&self) -> async_channel::Sender<AsyncSinkReply> {
         self.reply_channel.0.clone()
     }
 
-    pub(crate) fn spawn<S>(self, sink: S, ctx: SinkContext) -> Result<SinkAddr>
+    /// spawn your specific sink
+    pub fn spawn<S>(self, sink: S, ctx: SinkContext) -> Result<SinkAddr>
     where
         S: Sink + Send + 'static,
     {
@@ -452,13 +501,14 @@ pub(crate) fn builder(
     qsize: usize,
 ) -> Result<SinkManagerBuilder> {
     // resolve codec and processors
-    let postprocessor_names = config.postprocessors.unwrap_or_else(|| vec![]);
+    let postprocessor_names = config.postprocessors.clone().unwrap_or_else(|| vec![]);
     let serializer = EventSerializer::build(
         config.codec.clone(),
         connector_default_codec,
         postprocessor_names,
     )?;
-    // the incoming channels for eventa are all bounded, so we can safely be unbounded here
+    // the incoming channels for events are all bounded, so we can safely be unbounded here
+    // TODO: actually we could have lots of CB events not bound to events here
     let reply_channel = async_channel::unbounded();
     Ok(SinkManagerBuilder {
         qsize,
@@ -467,7 +517,11 @@ pub(crate) fn builder(
     })
 }
 
-pub(crate) struct EventSerializer {
+/// Helper for serializing events within sinks
+///
+/// Keeps track of codec/postprocessors for seach stream
+/// Attention: Take care to clear out data for streams that are not used
+pub struct EventSerializer {
     // default stream handling
     codec: Box<dyn Codec>,
     postprocessors: Postprocessors,
@@ -476,7 +530,7 @@ pub(crate) struct EventSerializer {
     postprocessor_names: Vec<String>,
     // stream data
     // TODO: clear out state from codec, postprocessors and enable reuse
-    streams: halfbrown::HashMap<u64, (Box<dyn Codec>, Postprocessors)>,
+    streams: BTreeMap<u64, (Box<dyn Codec>, Postprocessors)>,
 }
 
 impl EventSerializer {
@@ -493,42 +547,53 @@ impl EventSerializer {
             postprocessors,
             codec_config,
             postprocessor_names,
-            streams: halfbrown::HashMap::with_capacity(0),
+            streams: BTreeMap::new(),
         })
     }
 
     fn drop_stream(&mut self, stream_id: u64) {
         self.streams.remove(&stream_id);
     }
-    fn serialize(&mut self, value: &Value, ingest_ns: u64) -> Result<Vec<Vec<u8>>> {
-        self.serialize_stream(value, ingest_ns, DEFAULT_STREAM_ID)
+
+    /// clear out all streams - this can lead to data loss
+    /// only use when you are sure, all the streams are gone
+    fn clear(&mut self) {
+        self.streams.clear()
     }
-    fn serialize_stream(
+
+    /// serialize event for the default stream
+    fn serialize(&mut self, value: &Value, ingest_ns: u64) -> Result<Vec<Vec<u8>>> {
+        self.serialize_for_stream(value, ingest_ns, DEFAULT_STREAM_ID)
+    }
+
+    /// serialize event for a certain stream
+    fn serialize_for_stream(
         &mut self,
         value: &Value,
         ingest_ns: u64,
         stream_id: u64,
     ) -> Result<Vec<Vec<u8>>> {
-        let (codec, pps) = if stream_id == DEFAULT_STREAM_ID {
-            (&mut self.codec, &mut self.postprocessors)
+        if stream_id == DEFAULT_STREAM_ID {
+            postprocess(
+                &mut self.postprocessors,
+                ingest_ns,
+                self.codec.encode(value)?,
+            )
         } else {
             match self.streams.entry(stream_id) {
-                halfbrown::Entry::Occupied(entry) => {
+                Entry::Occupied(mut entry) => {
                     let (c, pps) = entry.get_mut();
-                    (c, pps)
+                    postprocess(pps, ingest_ns, c.encode(value)?)
                 }
-                halfbrown::Entry::Vacant(entry) => {
+                Entry::Vacant(entry) => {
                     let codec = codec::resolve(&self.codec_config)?;
                     let pps = make_postprocessors(self.postprocessor_names.as_slice())?;
                     // insert data for a new stream
                     let (c, pps2) = entry.insert((codec, pps));
-                    (c, pps2)
+                    postprocess(pps2, ingest_ns, c.encode(value)?)
                 }
             }
-        };
-
-        let encoded = codec.encode(value)?;
-        postprocess(pps, ingest_ns, encoded)
+        }
     }
 }
 
@@ -538,9 +603,8 @@ where
 {
     sink: S,
     ctx: SinkContext,
-    qsize: usize,
     rx: async_channel::Receiver<SinkMsg>,
-    reply_rx: async_channel::Receiver<SinkReply>,
+    reply_rx: async_channel::Receiver<AsyncSinkReply>,
     serializer: EventSerializer,
     /// tracking which operators all incoming events visited
     merged_operator_meta: OpMeta,
@@ -555,14 +619,13 @@ where
 {
     fn new(sink: S, ctx: SinkContext, builder: SinkManagerBuilder, rx: Receiver<SinkMsg>) -> Self {
         let SinkManagerBuilder {
-            qsize,
             serializer,
             reply_channel,
+            ..
         } = builder;
         Self {
             sink,
             ctx,
-            qsize,
             rx,
             reply_rx: reply_channel.1,
             serializer,
@@ -601,24 +664,31 @@ where
                                 self.pipelines.retain(|(url, _)| url != &id);
                             }
                             SinkMsg::Start => self.sink.on_start(&mut self.ctx).await,
-                            SinkMsg::Resume => self.sink.on_resume(&mut self.ctx).await,
-                            SinkMsg::Pause => self.sink.on_pause(&mut self.ctx).await,
+                            SinkMsg::Resume => {
+                                self.paused = false;
+                                self.sink.on_resume(&mut self.ctx).await
+                            }
+                            SinkMsg::Pause => {
+                                self.paused = true;
+                                self.sink.on_pause(&mut self.ctx).await
+                            }
                             SinkMsg::Stop => {
                                 self.sink.on_stop(&mut self.ctx).await;
                                 return Ok(());
                             }
                             SinkMsg::ConnectionEstablished => {
+                                let cf =
+                                    Event::cb_open(nanotime(), self.merged_operator_meta.clone());
                                 // send CB restore to all pipes
-                                for (_url, addr) in &self.pipelines {
-                                    addr.send_insight(Event::cb_restore(nanotime())).await?;
-                                }
+                                send_contraflow(&self.pipelines, &self.ctx.url, cf).await;
                             }
                             SinkMsg::ConnectionLost => {
-                                // TODO: clean out EventSerializer
+                                // clean out all pending stream data from EventSerializer - we assume all streams closed at this point
+                                self.serializer.clear();
                                 // send CB trigger to all pipes
-                                for (_url, addr) in &self.pipelines {
-                                    addr.send_insight(Event::cb_trigger(nanotime())).await?;
-                                }
+                                let cf =
+                                    Event::cb_close(nanotime(), self.merged_operator_meta.clone());
+                                send_contraflow(&self.pipelines, &self.ctx.url, cf).await;
                             }
                             SinkMsg::Event { event, port } => {
                                 let cf_builder = ContraflowBuilder::from(&event);
@@ -626,70 +696,91 @@ where
                                 // FIXME: fix additional clones here for merge
                                 self.merged_operator_meta.merge(event.op_meta.clone());
                                 let transactional = event.transactional;
-                                let mut failed = false;
                                 // TODO: increment event in metric
                                 let start = nanotime();
                                 let res = self
                                     .sink
-                                    .on_event(port.borrow(), event, &self.ctx, &mut self.serializer)
+                                    .on_event(
+                                        port.borrow(),
+                                        event,
+                                        &self.ctx,
+                                        &mut self.serializer,
+                                        start,
+                                    )
                                     .await;
                                 let duration = nanotime() - start;
                                 match res {
-                                    Ok(mut replies) => {
+                                    Ok(replies) => {
                                         // TODO: send metric for duration
-                                        for reply in replies.drain(..) {
-                                            let contraflow = match reply {
-                                                SinkReply::Ack => cf_builder.ack(duration),
-                                                SinkReply::Fail => cf_builder.fail(),
-                                                SinkReply::CB(cb) => {
-                                                    // we do not maintain a merged op_meta here, to avoid the cost
-                                                    // the downside is, only operators which this event passed get to know this CB event
-                                                    // but worst case is, 1 or 2 more events are lost - totally worth it
-                                                    cf_builder.cb(cb)
-                                                }
-                                                SinkReply::None => {
-                                                    continue;
-                                                }
-                                            };
-                                            send_contraflow(
-                                                &self.pipelines,
-                                                &self.ctx.url,
-                                                contraflow,
-                                            )
-                                            .await;
-                                        }
+                                        handle_replies(
+                                            replies,
+                                            duration,
+                                            cf_builder,
+                                            &self.pipelines,
+                                            &self.ctx.url,
+                                            transactional && self.sink.auto_ack(),
+                                        )
+                                        .await;
                                     }
-                                    Err(e) => {
+                                    Err(_e) => {
                                         // sink error that is not signalled via SinkReply::Fail (not handled)
                                         // TODO: error logging? This could fill the logs quickly. Rather emit a metrics event with the logging info?
-                                        failed = true;
+                                        if transactional {
+                                            let cf = cf_builder.into_fail();
+                                            send_contraflow(&self.pipelines, &self.ctx.url, cf)
+                                                .await;
+                                        }
                                     }
                                 };
-                                if (failed || self.sink.auto_ack()) && transactional {
-                                    let e = cf_builder.ack_or_fail(failed, duration);
-                                    send_contraflow(&self.pipelines, &self.ctx.url, e).await;
-                                }
                             }
                             SinkMsg::Signal { signal } => {
-                                match self
+                                let cf_builder = ContraflowBuilder::from(&signal);
+                                let start = nanotime();
+                                let res = self
                                     .sink
                                     .on_signal(signal, &self.ctx, &mut self.serializer)
-                                    .await
-                                {
-                                    Ok(mut replies) => {
-                                        todo!()
+                                    .await;
+                                let duration = nanotime() - start;
+                                match res {
+                                    Ok(replies) => {
+                                        handle_replies(
+                                            replies,
+                                            duration,
+                                            cf_builder,
+                                            &self.pipelines,
+                                            &self.ctx.url,
+                                            false,
+                                        )
+                                        .await;
                                     }
-                                    Err(e) => todo!(),
+                                    Err(e) => {
+                                        // logging here is ok, as this is mostly limited to ticks (every 100ms)
+                                        error!(
+                                            "[Connector::{}] Error handling signal: {}",
+                                            &self.ctx.url, e
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                     SinkMsgWrapper::FromSink(reply) => {
-                        // TODO: maintain merged op_meta?
                         // handle asynchronous sink replies
-                        // TODO: include all the information in the actual asynchronous SinkReply
-                        //       that we need to handle it here properly
-                        todo!()
+                        let cf = match reply {
+                            AsyncSinkReply::Ack(data, duration) => Event::cb_ack_with_timing(
+                                data.ingest_ns,
+                                data.event_id,
+                                data.op_meta,
+                                duration,
+                            ),
+                            AsyncSinkReply::Fail(data) => {
+                                Event::cb_fail(data.ingest_ns, data.event_id, data.op_meta)
+                            }
+                            AsyncSinkReply::CB(data, cb) => {
+                                Event::insight(cb, data.event_id, data.ingest_ns, data.op_meta)
+                            }
+                        };
+                        send_contraflow(&self.pipelines, &self.ctx.url, cf).await;
                     }
                 }
             }
@@ -704,17 +795,33 @@ pub(crate) struct ContraflowBuilder {
 }
 
 impl ContraflowBuilder {
-    fn ack(self, duration: u64) -> Event {
-        Event::cb_ack(self.ingest_ns, self.event_id, self.op_meta)
+    fn ack(&self, duration: u64) -> Event {
+        Event::cb_ack_with_timing(
+            self.ingest_ns,
+            self.event_id.clone(),
+            self.op_meta.clone(),
+            duration,
+        )
     }
-    fn fail(self) -> Event {
+    fn into_ack(self, duration: u64) -> Event {
+        Event::cb_ack_with_timing(self.ingest_ns, self.event_id, self.op_meta, duration)
+    }
+    fn fail(&self) -> Event {
+        Event::cb_fail(self.ingest_ns, self.event_id.clone(), self.op_meta.clone())
+    }
+    fn into_fail(self) -> Event {
         Event::cb_fail(self.ingest_ns, self.event_id, self.op_meta)
     }
-    fn ack_or_fail(self, failed: bool, duration: u64) -> Event {
-        Event::ack_or_fail(!failed, self.ingest_ns, self.event_id, self.op_meta)
+    fn cb(&self, cb: CbAction) -> Event {
+        Event::insight(
+            cb,
+            self.event_id.clone(),
+            self.ingest_ns,
+            self.op_meta.clone(),
+        )
     }
-    fn cb(self, cb: CbAction) -> Event {
-        Event::ins(ingest_ns)
+    fn into_cb(self, cb: CbAction) -> Event {
+        Event::insight(cb, self.event_id, self.ingest_ns, self.op_meta)
     }
 }
 
@@ -750,5 +857,54 @@ async fn send_contraflow(
                 &connector_url, first_url, e
             );
         }
+    }
+}
+
+async fn handle_replies(
+    replies: Vec<SinkReply>,
+    duration: u64,
+    cf_builder: ContraflowBuilder,
+    pipelines: &[(TremorUrl, pipeline::Addr)],
+    connector_url: &TremorUrl,
+    send_auto_ack: bool,
+) {
+    let mut reply_iter = replies.into_iter();
+    if let Some(first) = reply_iter.next() {
+        for reply in reply_iter {
+            let contraflow = match reply {
+                SinkReply::Ack => cf_builder.ack(duration),
+                SinkReply::Fail => cf_builder.fail(),
+                SinkReply::CB(cb) => {
+                    // we do not maintain a merged op_meta here, to avoid the cost
+                    // the downside is, only operators which this event passed get to know this CB event
+                    // but worst case is, 1 or 2 more events are lost - totally worth it
+                    cf_builder.cb(cb)
+                }
+                SinkReply::None => {
+                    continue;
+                }
+            };
+            send_contraflow(pipelines, connector_url, contraflow).await;
+        }
+        match first {
+            SinkReply::Ack => {
+                send_contraflow(pipelines, connector_url, cf_builder.into_ack(duration)).await
+            }
+            SinkReply::Fail => {
+                send_contraflow(pipelines, connector_url, cf_builder.into_fail()).await
+            }
+            SinkReply::CB(cb) => {
+                // we do not maintain a merged op_meta here, to avoid the cost
+                // the downside is, only operators which this event passed get to know this CB event
+                // but worst case is, 1 or 2 more events are lost - totally worth it
+                send_contraflow(pipelines, connector_url, cf_builder.into_cb(cb)).await
+            }
+            SinkReply::None => {
+                if send_auto_ack {
+                    let cf = cf_builder.into_ack(duration);
+                    send_contraflow(pipelines, connector_url, cf).await;
+                }
+            }
+        };
     }
 }

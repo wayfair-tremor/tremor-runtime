@@ -32,6 +32,7 @@
 
 #![cfg(not(tarpaulin_include))]
 
+use crate::sink::prelude::*;
 use async_channel::{bounded, Receiver, Sender};
 use async_std::task::JoinHandle;
 use elastic::{
@@ -43,7 +44,6 @@ use simd_json::json;
 use std::time::Instant;
 use std::{iter, str};
 use tremor_pipeline::{EventId, EventIdGenerator};
-use crate::sink::prelude::*;
 use tremor_script::prelude::*;
 use tremor_script::Object;
 use tremor_value::literal;
@@ -532,7 +532,7 @@ impl Sink for Elastic {
         _input: &str,
         _codec: &mut dyn Codec,
         _codec_map: &HashMap<String, Box<dyn Codec>>,
-        mut event: Event,
+        event: Event,
     ) -> ResultVec {
         if event.is_empty() {
             // nothing to send to ES, an empty event would result in

@@ -127,6 +127,7 @@ rdkafka-sys = { version = "4.0.0", features = [
   "cmake-build",
   "libz-static",
 ] } # tracking the version rdkafka depends on
+rental = "0.5"
 smol = "1.2.5"
 
 # crononome

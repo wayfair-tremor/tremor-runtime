@@ -42,8 +42,8 @@ use async_std::task::{self, JoinHandle};
 use beef::Cow;
 
 use crate::config::Connector as ConnectorConfig;
-use crate::connectors::sink::{Sink, SinkAddr, SinkContext, SinkMsg};
-use crate::connectors::source::{Source, SourceAddr, SourceContext, SourceMsg};
+use crate::connectors::sink::{SinkAddr, SinkContext, SinkMsg};
+use crate::connectors::source::{SourceAddr, SourceContext, SourceMsg};
 use crate::errors::{Error, ErrorKind, Result};
 use crate::pipeline;
 use crate::system::World;

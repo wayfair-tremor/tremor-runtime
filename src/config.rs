@@ -247,15 +247,6 @@ pub struct Connector {
     pub(crate) on_pause: PauseBehaviour,
 }
 
-impl Connector {
-    fn codec_config(&self) -> Option<CodecConfig> {
-        self.codec.map(|e| match e {
-            Either::Left(s) => CodecConfig::from(s.as_str()),
-            Either::Right(config) => config,
-        })
-    }
-}
-
 /// Configuration for a Binding
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

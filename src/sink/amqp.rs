@@ -118,7 +118,7 @@ impl Sink for Amqp {
         _input: &str,
         codec: &mut dyn Codec,
         _codec_map: &HashMap<String, Box<dyn Codec>>,
-        mut event: Event,
+        event: Event,
     ) -> ResultVec {
         self.handle_channel().await?;
         let ingest_ns = event.ingest_ns;

@@ -429,9 +429,7 @@ impl Operator for Wal {
         self.store_event(uid, event)?;
 
         let insights = if let Some(op_meta) = op_meta {
-            let mut insight = Event::cb_ack(ingest_ns, id);
-            insight.op_meta = op_meta;
-            vec![insight]
+            vec![Event::cb_ack(ingest_ns, id, op_meta)]
         } else {
             vec![]
         };
@@ -520,7 +518,7 @@ mod test {
         assert_eq!(None, o.confirmed);
 
         // acknowledge the first event
-        i = Event::cb_ack(e.ingest_ns, r.events[0].1.id.clone());
+        i = Event::cb_ack(e.ingest_ns, r.events[0].1.id.clone(), OpMeta::default());
         o.on_contraflow(wal_uid, &mut i);
 
         // we still have two events stored
@@ -543,7 +541,7 @@ mod test {
         assert_eq!(Some(Idx::from(id.event_id())), o.confirmed);
 
         // acknowledge the second event
-        i = Event::cb_ack(e.ingest_ns, r.events[1].1.id.clone());
+        i = Event::cb_ack(e.ingest_ns, r.events[1].1.id.clone(), OpMeta::default());
         o.on_contraflow(wal_uid, &mut i);
 
         // still 1 left

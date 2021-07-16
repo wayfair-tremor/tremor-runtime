@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 // Copyright 2021, The Tremor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,16 +12,17 @@ use std::net::SocketAddr;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use crate::connectors::prelude::*;
-use crate::connectors::sink::{ChannelSink, ChannelSinkMsg};
+use crate::connectors::sink::{AsyncSinkReply, ChannelSink, ChannelSinkMsg};
 use crate::connectors::source::ChannelSource;
 pub use crate::errors::{Error, ErrorKind, Result};
 use async_channel::{bounded, Sender, TrySendError};
 use async_std::net::TcpListener;
 use async_std::task::{self, JoinHandle};
 use futures::io::{AsyncReadExt, AsyncWriteExt};
-use futures::FutureExt;
 use simd_json::ValueAccess;
+use std::net::SocketAddr;
 use tremor_common::stry;
+use tremor_common::time::nanotime;
 use tremor_pipeline::EventOriginUri;
 use tremor_value::{literal, Value};
 
@@ -86,9 +85,9 @@ impl ConnectorBuilder for Builder {
             Ok(Box::new(TcpServer {
                 url: id.clone(),
                 config,
-                accept_task: None, // not yet started
-                sink_channel: dummy_tx2,
-                source_channel: dummy_tx,
+                accept_task: None,        // not yet started
+                sink_channel: dummy_tx2,  // replaced in create_sink()
+                source_channel: dummy_tx, // replaced in create_source()
             }))
         } else {
             Err(crate::errors::ErrorKind::MissingConfiguration(String::from("TcpServer")).into())
@@ -151,7 +150,7 @@ impl Connector for TcpServer {
         ctx: SinkContext,
         builder: SinkManagerBuilder,
     ) -> Result<Option<SinkAddr>> {
-        let sink = ChannelSink::new(builder.qsize(), resolve_connection_meta);
+        let sink = ChannelSink::new(builder.qsize(), resolve_connection_meta, builder.reply_tx());
         self.sink_channel = sink.sender();
         let addr = builder.spawn(sink, ctx)?;
         Ok(Some(addr))
@@ -188,7 +187,7 @@ impl Connector for TcpServer {
                 let (mut read_half, mut write_half) = stream.split();
                 let sc_stream = source_tx.clone();
                 let stream_url = accept_url.clone();
-
+                let sink_url = accept_url.clone();
                 let origin_uri = EventOriginUri {
                     uid,
                     scheme: URL_SCHEME.to_string(),
@@ -229,10 +228,38 @@ impl Connector for TcpServer {
                 // spawn sink stream task
                 let stream_sink_tx = sink_tx.clone();
                 task::spawn(async move {
-                    while let Ok(data) = stream_rx.recv().await {
-                        for chunk in data.data {
+                    // receive loop from channel sink
+                    while let Ok(SinkData {
+                        data,
+                        contraflow,
+                        start,
+                    }) = stream_rx.recv().await
+                    {
+                        let mut failed = false;
+                        for chunk in data {
                             let slice: &[u8] = &chunk;
-                            write_half.write_all(slice).await?;
+                            if let Err(e) = write_half.write_all(slice).await {
+                                failed = true;
+                                error!("[Connector::{}] Error writing TCP data: {}", &sink_url, e);
+                                break;
+                            }
+                        }
+                        // send asyn contraflow insights if requested (only if event.transactional)
+                        if let Some((cf_data, sender)) = contraflow {
+                            let reply = if failed {
+                                AsyncSinkReply::Fail(cf_data)
+                            } else {
+                                AsyncSinkReply::Ack(cf_data, nanotime() - start)
+                            };
+                            if let Err(e) = sender.send(reply).await {
+                                error!(
+                                    "[Connector::{}] Error sending async sink reply: {}",
+                                    &sink_url, e
+                                );
+                            }
+                        }
+                        if failed {
+                            break;
                         }
                     }
                     stream_sink_tx

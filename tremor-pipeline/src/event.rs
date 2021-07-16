@@ -16,11 +16,7 @@ use crate::{CbAction, EventId, OpMeta, SignalKind};
 use std::mem::swap;
 use tremor_common::time::nanotime;
 use tremor_script::prelude::*;
-<<<<<<< HEAD
-use tremor_script::{EventOriginUri, EventPayload, Value};
-=======
-use tremor_script::{literal, EventOriginUri, LineValue, Value};
->>>>>>> 89b779cc (Sink event handling (yet unfinished))
+use tremor_script::{literal, EventOriginUri, EventPayload, Value};
 
 /// A tremor event
 #[derive(
@@ -60,13 +56,12 @@ impl Event {
 
     /// turns the event in an insight given it's success
     #[must_use]
-    pub fn insight(self, success: bool) -> Event {
+    pub fn insight(cb: CbAction, id: EventId, ingest_ns: u64, op_meta: OpMeta) -> Event {
         Event {
-            cb: success.into(),
-            ingest_ns: self.ingest_ns,
-            id: self.id,
-            op_meta: self.op_meta,
-            origin_uri: self.origin_uri,
+            cb,
+            id,
+            ingest_ns,
+            op_meta,
             ..Event::default()
         }
     }
@@ -150,6 +145,36 @@ impl Event {
         }
     }
 
+    /// Creates a new event to restore/open a CB
+    ///
+    /// For those CB events we don't need an explicit EventId.
+    /// Sources should react properly upon any CB message, no matter the EventId
+    /// operators can use the op_meta for checking if they are affected
+    #[must_use]
+    pub fn cb_open(ingest_ns: u64, op_meta: OpMeta) -> Self {
+        Self {
+            ingest_ns,
+            op_meta,
+            cb: CbAction::Open,
+            ..Event::default()
+        }
+    }
+
+    /// Creates a new event to trigger/close a CB
+    ///
+    /// For those CB events we don't need an explicit EventId.
+    /// Sources should react properly upon any CB message, no matter the EventId
+    /// operators can use the op_meta for checking if they are affected
+    #[must_use]
+    pub fn cb_close(ingest_ns: u64, op_meta: OpMeta) -> Self {
+        Self {
+            ingest_ns,
+            op_meta,
+            cb: CbAction::Close,
+            ..Event::default()
+        }
+    }
+
     /// Creates a new event to trigger a CB
     #[must_use]
     pub fn cb_trigger(ingest_ns: u64) -> Self {
@@ -160,7 +185,7 @@ impl Event {
         }
     }
 
-    /// Creates a new event to trigger a CB
+    /// Creates a new contraflow event delivery acknowledge message
     #[must_use]
     pub fn cb_ack(ingest_ns: u64, id: EventId, op_meta: OpMeta) -> Self {
         Event {
@@ -168,6 +193,19 @@ impl Event {
             id,
             cb: CbAction::Ack,
             op_meta,
+            ..Event::default()
+        }
+    }
+
+    /// Creates a new contraflow event delivery acknowledge message with timing in the metadata
+    #[must_use]
+    pub fn cb_ack_with_timing(ingest_ns: u64, id: EventId, op_meta: OpMeta, duration: u64) -> Self {
+        Event {
+            ingest_ns,
+            id,
+            cb: CbAction::Ack,
+            op_meta,
+            data: (Value::null(), literal!({ "time": duration })).into(),
             ..Event::default()
         }
     }
@@ -190,7 +228,7 @@ impl Event {
         Event {
             id: self.id.clone(),
             ingest_ns: self.ingest_ns,
-            op_meta: self.op_meta.clone(),,
+            op_meta: self.op_meta.clone(),
             cb: CbAction::Fail,
             ..Event::default()
         }
@@ -404,22 +442,28 @@ mod test {
 
     #[test]
     fn cb() {
-        let mut e = Event::default();
-        assert_eq!(e.clone().insight(true).cb, CbAction::Ack);
-        assert_eq!(e.clone().insight(false).cb, CbAction::Fail);
+        let e = Event::default();
+        assert_eq!(CbAction::from(true), CbAction::Ack);
+        assert_eq!(CbAction::from(false), CbAction::Fail);
 
         assert_eq!(
             Event::ack_or_fail(true, 0, EventId::default(), OpMeta::default()).cb,
             CbAction::Ack
         );
-        assert_eq!(Event::cb_ack(0, EventId::default(), OpMeta::default()).cb, CbAction::Ack);
+        assert_eq!(
+            Event::cb_ack(0, EventId::default(), OpMeta::default()).cb,
+            CbAction::Ack
+        );
         assert_eq!(e.insight_ack().cb, CbAction::Ack);
 
         assert_eq!(
             Event::ack_or_fail(false, 0, EventId::default(), OpMeta::default()).cb,
             CbAction::Fail
         );
-        assert_eq!(Event::cb_fail(0, EventId::default(), OpMeta::default()).cb, CbAction::Fail);
+        assert_eq!(
+            Event::cb_fail(0, EventId::default(), OpMeta::default()).cb,
+            CbAction::Fail
+        );
         assert_eq!(e.insight_fail().cb, CbAction::Fail);
 
         let mut clone = e.clone();

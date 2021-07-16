@@ -169,22 +169,21 @@ struct StreamState {
     preprocessors: Preprocessors,
 }
 
-pub(crate) struct SourceManagerBuilder {
+pub struct SourceManagerBuilder {
     qsize: usize,
     /// the configured codec
     codec: Box<dyn Codec>,
-    codec_map: HashMap<String, Box<dyn Codec>>,
     /// the configured pre processors for the default stream
     preprocessors: Preprocessors,
     preprocessor_names: Vec<String>,
 }
 
 impl SourceManagerBuilder {
-    pub(crate) fn qsize(&self) -> usize {
+    pub fn qsize(&self) -> usize {
         self.qsize
     }
 
-    pub(crate) fn spawn<S>(self, source: S, ctx: SourceContext) -> Result<SourceAddr>
+    pub fn spawn<S>(self, source: S, ctx: SourceContext) -> Result<SourceAddr>
     where
         S: Source + Send + 'static,
     {
@@ -202,7 +201,7 @@ impl SourceManagerBuilder {
 /// create a builder for a `SourceManager`.
 /// with the generic information available in the connector
 /// the builder then in a second step takes the source specific information to assemble and spawn the actual `SourceManager`.
-pub(crate) fn builder(
+pub fn builder(
     config: &ConnectorConfig,
     connector_default_codec: &str,
     qsize: usize,
@@ -213,23 +212,12 @@ pub(crate) fn builder(
     } else {
         codec::lookup(connector_default_codec)?
     };
-    // resolve codec map
-    let codec_map = if let Some(config_map) = config.codec_map {
-        let codec_map = HashMap::with_capacity(config_map.len());
-        for (k, v) in &config_map {
-            codec_map.insert(k.clone(), codec::resolve(v)?);
-        }
-        codec_map
-    } else {
-        HashMap::with_capacity(0)
-    };
     // resolve preprocessors
     let preprocessor_names = config.preprocessors.clone().unwrap_or_else(|| vec![]);
     let preprocessors = make_preprocessors(&preprocessor_names)?;
     Ok(SourceManagerBuilder {
         qsize,
         codec,
-        codec_map,
         preprocessors,
         preprocessor_names,
     })
@@ -246,8 +234,6 @@ where
     rx: Receiver<SourceMsg>,
     /// the configured codec
     codec: Box<dyn Codec>,
-    codec_map: HashMap<String, Box<dyn Codec>>,
-    // TODO: codec_map
     /// the configured pre processors for the default stream
     preprocessors: Preprocessors,
     preprocessor_names: Vec<String>,
@@ -269,7 +255,6 @@ where
     ) -> Self {
         let SourceManagerBuilder {
             codec,
-            codec_map,
             preprocessors,
             preprocessor_names,
             ..
@@ -279,7 +264,6 @@ where
             ctx,
             rx,
             codec,
-            codec_map,
             preprocessors,
             preprocessor_names,
             stream_states: BTreeMap::new(),
@@ -332,7 +316,7 @@ where
                         self.paused = true;
                         self.source.on_connection_established(&mut self.ctx).await
                     }
-                    SourceMsg::Cb(cb, id) => {
+                    SourceMsg::Cb(_cb, _id) => {
                         todo!()
                     }
                 }

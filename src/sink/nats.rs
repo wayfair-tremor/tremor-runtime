@@ -222,8 +222,11 @@ impl Sink for Nats {
                     match publish_result {
                         Ok(()) => {
                             if event.transactional {
-                                let mut insight = Event::cb_ack(ingest_ns, event.id.clone());
-                                insight.op_meta = self.merged_meta.clone();
+                                let mut insight = Event::cb_ack(
+                                    ingest_ns,
+                                    event.id.clone(),
+                                    self.merged_meta.clone(),
+                                );
                                 insight.data = (Value::null(), literal!({ "time": processing_start.elapsed().as_millis() as u64 })).into();
 
                                 if let Err(e) =

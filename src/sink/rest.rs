@@ -694,8 +694,7 @@ async fn codec_task(
                 // report send error as CB fail
                 // sending a CB close would mean we need to take measures to reopen - introduce a healthcheck
                 if let Some(op_meta) = op_meta {
-                    let mut insight = Event::cb_fail(nanotime(), id.clone());
-                    insight.op_meta = op_meta;
+                    let insight = Event::cb_fail(nanotime(), id.clone(), op_meta);
                     if let Err(send_err) = reply_tx.send(sink::Reply::Insight(insight)).await {
                         error!(
                             "[Sink::{}] Error sending CB trigger event for event {}: {}",

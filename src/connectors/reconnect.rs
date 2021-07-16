@@ -32,10 +32,11 @@ pub(crate) struct Reconnect {
 /// can use to asynchronously notify the runtime whenever their connection is lost
 ///
 /// This will change the connector state properly and trigger a new reconnect attempt (according to the configured logic)
-pub(crate) struct ConnectionLostNotifier(Sender<Msg>);
+pub struct ConnectionLostNotifier(Sender<Msg>);
 
 impl ConnectionLostNotifier {
-    pub(crate) async fn notify(&self) -> Result<()> {
+    /// notify the runtime that this connector lost its connection
+    pub async fn notify(&self) -> Result<()> {
         self.0.send(Msg::ConnectionLost).await?;
         Ok(())
     }

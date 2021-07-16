@@ -236,7 +236,7 @@ impl Sink for Kafka {
         _input: &str,
         codec: &mut dyn Codec,
         _codec_map: &HashMap<String, Box<dyn Codec>>,
-        mut event: Event,
+        event: Event,
     ) -> ResultVec {
         // ensure we handle any fatal errors occured during last on_event invocation
         self.drain_fatal_errors()?;

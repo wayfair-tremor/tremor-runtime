@@ -60,12 +60,6 @@ impl From<http_types::Error> for Error {
     }
 }
 
-impl<F> From<rental::RentalError<F, Box<Vec<u8>>>> for Error {
-    fn from(_e: rental::RentalError<F, Box<Vec<u8>>>) -> Self {
-        Self::from("Rental Error".to_string())
-    }
-}
-
 impl From<Box<dyn std::error::Error>> for Error {
     fn from(e: Box<dyn std::error::Error>) -> Self {
         Self::from(format!("{:?}", e))

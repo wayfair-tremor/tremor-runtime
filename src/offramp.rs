@@ -34,6 +34,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::fmt;
 use tremor_common::ids::OfframpIdGen;
 use tremor_common::time::nanotime;
+use tremor_pipeline::OpMeta;
 
 /// messages an offramp can receive
 #[derive(Debug)]
@@ -297,7 +298,12 @@ impl Manager {
                                 // this will prevent fail insights being swallowed here
                                 // sinks need to take care of sending acks themselves. Deal with it.
                                 if (fail || offramp.auto_ack()) && transactional {
-                                    let e = Event::ack_or_fail(!fail, ingest_ns, ids);
+                                    let e = Event::ack_or_fail(
+                                        !fail,
+                                        ingest_ns,
+                                        ids,
+                                        OpMeta::default(),
+                                    );
                                     send_to_pipelines(&offramp_url, &mut pipelines, e).await;
                                 }
                             }

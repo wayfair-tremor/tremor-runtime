@@ -75,7 +75,7 @@ impl Sink for File {
         _input: &str,
         codec: &mut dyn Codec,
         _codec_map: &HashMap<String, Box<dyn Codec>>,
-        mut event: Event,
+        event: Event,
     ) -> ResultVec {
         if let Some(file) = &mut self.file {
             for value in event.value_iter() {

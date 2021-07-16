@@ -923,7 +923,7 @@ type: stderr
         self.system
             .send(ManagerMsg::Pipeline(pipeline::ManagerMsg::Create(
                 tx,
-                pipeline::Create { config, id },
+                Box::new(pipeline::Create { config, id }),
             )))
             .await?;
         rx.recv().await?

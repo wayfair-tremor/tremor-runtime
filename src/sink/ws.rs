@@ -102,8 +102,7 @@ async fn handle_error(
     error!("[Sink::{}] {}", sink_url, e);
     // send fail
     if let Some(op_meta) = maybe_op_meta {
-        let mut fail_event = Event::cb_fail(nanotime(), ids.clone());
-        fail_event.op_meta = op_meta;
+        let fail_event = Event::cb_fail(nanotime(), ids.clone(), op_meta);
         reply_tx.send(sink::Reply::Insight(fail_event)).await?;
     }
 
@@ -204,8 +203,11 @@ async fn ws_connection_loop(
                                 match ws_stream.send(msg).await {
                                     Ok(_) => {
                                         if let Some(op_meta) = maybe_op_meta.as_ref() {
-                                            let mut e = Event::cb_ack(nanotime(), event_id.clone());
-                                            e.op_meta = op_meta.clone();
+                                            let e = Event::cb_ack(
+                                                nanotime(),
+                                                event_id.clone(),
+                                                op_meta.clone(),
+                                            );
                                             reply_tx.send(sink::Reply::Insight(e)).await?;
                                         }
                                     }

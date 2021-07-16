@@ -113,7 +113,6 @@ pub(crate) enum SourceReply {
         origin_uri: EventOriginUri,
         /// already structured data (including metadata)
         data: EventPayload,
-        data: LineValue,
     },
     /// A stream is opened
     StartStream(usize),
