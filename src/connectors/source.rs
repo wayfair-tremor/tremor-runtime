@@ -11,21 +11,24 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 use async_std::task;
+use either::Either;
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use tremor_script::{EventPayload, ValueAndMeta};
 
 use crate::codec::{self, Codec};
-use crate::config::Connector as ConnectorConfig;
-use crate::errors::Result;
+use crate::config::{CodecConfig, Connector as ConnectorConfig};
+use crate::errors::{Error, Result};
 use crate::pipeline;
-use crate::preprocessor::{make_preprocessors, Preprocessors};
+use crate::preprocessor::{make_preprocessors, preprocess, Preprocessors};
 use crate::url::TremorUrl;
 use async_channel::{bounded, Receiver, Sender};
 use beef::Cow;
 use halfbrown::HashMap;
-use tremor_pipeline::{CbAction, EventId, EventOriginUri};
+use tremor_pipeline::{CbAction, EventId, EventOriginUri, DEFAULT_STREAM_ID};
 use tremor_value::Value;
+use value_trait::Builder;
 
 /// Messages a Source can receive
 pub enum SourceMsg {
@@ -165,17 +168,142 @@ pub struct SourceAddr {
     pub addr: async_channel::Sender<SourceMsg>,
 }
 
-struct StreamState {
+macro_rules! stry_vec {
+    ($e:expr) => {
+        match $e {
+            ::std::result::Result::Ok(val) => val,
+            ::std::result::Result::Err(err) => return vec![::std::result::Result::Err(err)],
+        }
+    };
+}
+
+pub struct EventDeserializer {
+    codec: Box<dyn Codec>,
     preprocessors: Preprocessors,
+    codec_config: Either<String, CodecConfig>,
+    preprocessor_names: Vec<String>,
+    streams: BTreeMap<u64, (Box<dyn Codec>, Preprocessors)>,
+}
+
+impl EventDeserializer {
+    fn build(
+        codec_config: Option<Either<String, CodecConfig>>,
+        default_codec: &str,
+        preprocessor_names: Vec<String>,
+    ) -> Result<Self> {
+        let codec_config = codec_config.unwrap_or_else(|| Either::Left(default_codec.to_string()));
+        let codec = codec::resolve(&codec_config)?;
+        let preprocessors = make_preprocessors(preprocessor_names.as_slice())?;
+        Ok(Self {
+            codec,
+            preprocessors,
+            codec_config,
+            preprocessor_names,
+            streams: BTreeMap::new(),
+        })
+    }
+
+    /// drop a stream and all associated deserialization state (codec and preprocessor)
+    pub fn drop_stream(&mut self, stream_id: u64) {
+        self.streams.remove(&stream_id);
+    }
+
+    /// clear out all streams - this can lead to data loss
+    /// only use when you are sure, all the streams are gone
+    pub fn clear(&mut self) {
+        self.streams.clear()
+    }
+
+    /// deserialize event for the default stream
+    ///
+    /// # Errors
+    ///   * if serialization failed (codec or postprocessors)
+    fn deserialize(
+        &mut self,
+        data: Vec<u8>,
+        meta: Option<Value<'static>>,
+        ingest_ns: &mut u64,
+        url: &TremorUrl,
+    ) -> Vec<Result<EventPayload>> {
+        self.deserialize_for_stream(data, meta, ingest_ns, DEFAULT_STREAM_ID, url)
+    }
+
+    fn decode_into(
+        codec: &mut Box<dyn Codec>,
+        data: Vec<u8>,
+        ingest_ns: u64,
+        meta: &Value<'static>,
+    ) -> Option<Result<EventPayload>> {
+        let payload = EventPayload::try_new::<Option<Error>, _>(data, |mut_data| {
+            match codec.decode(mut_data, ingest_ns) {
+                Ok(None) => Err(None),
+                Err(e) => Err(Some(e)),
+                Ok(Some(decoded)) => Ok(ValueAndMeta::from_parts(decoded, meta.clone())),
+            }
+        });
+        match payload {
+            Ok(ep) => Some(Ok(ep)),
+            Err(Some(e)) => Some(Err(e)),
+            Err(None) => None,
+        }
+    }
+
+    /// deserialize event for a given stream
+    ///
+    /// # Errors
+    ///   * if serialization failed (codec or postprocessors)
+    pub fn deserialize_for_stream(
+        &mut self,
+        data: Vec<u8>,
+        meta: Option<Value<'static>>,
+        ingest_ns: &mut u64,
+        stream_id: u64,
+        url: &TremorUrl,
+    ) -> Vec<Result<EventPayload>> {
+        let meta = meta.unwrap_or_else(Value::object); // empty object as default meta
+        if stream_id == DEFAULT_STREAM_ID {
+            match preprocess(&mut self.preprocessors, ingest_ns, data, url) {
+                Ok(preprocessed) => preprocessed
+                    .into_iter()
+                    .filter_map(|chunk| {
+                        Self::decode_into(&mut self.codec, chunk, *ingest_ns, &meta)
+                    })
+                    .collect(),
+                Err(e) => vec![Err(e)],
+            }
+        } else {
+            match self.streams.entry(stream_id) {
+                Entry::Occupied(mut entry) => {
+                    let (c, pps) = entry.get_mut();
+                    match preprocess(pps, ingest_ns, data, url) {
+                        Ok(preprocessed) => preprocessed
+                            .into_iter()
+                            .filter_map(|p| Self::decode_into(c, p, *ingest_ns, &meta))
+                            .collect(),
+                        Err(e) => vec![Err(e)],
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    let codec = stry_vec!(codec::resolve(&self.codec_config));
+                    let pps = stry_vec!(make_preprocessors(self.preprocessor_names.as_slice()));
+                    // insert data for a new stream
+                    let (codec, pps) = entry.insert((codec, pps));
+                    match preprocess(pps, ingest_ns, data, url) {
+                        Ok(preprocessed) => preprocessed
+                            .into_iter()
+                            .filter_map(|p| Self::decode_into(codec, p, *ingest_ns, &meta))
+                            .collect(),
+                        Err(e) => vec![Err(e)],
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub struct SourceManagerBuilder {
     qsize: usize,
-    /// the configured codec
-    codec: Box<dyn Codec>,
-    /// the configured pre processors for the default stream
-    preprocessors: Preprocessors,
-    preprocessor_names: Vec<String>,
+    deserializer: EventDeserializer,
 }
 
 impl SourceManagerBuilder {
@@ -206,20 +334,16 @@ pub fn builder(
     connector_default_codec: &str,
     qsize: usize,
 ) -> Result<SourceManagerBuilder> {
-    // resolve codec
-    let codec = if let Some(codec_config) = config.codec.as_ref() {
-        codec::resolve(codec_config)?
-    } else {
-        codec::lookup(connector_default_codec)?
-    };
-    // resolve preprocessors
-    let preprocessor_names = config.preprocessors.clone().unwrap_or_else(|| vec![]);
-    let preprocessors = make_preprocessors(&preprocessor_names)?;
+    let preprocessor_names = config.preprocessors.clone().unwrap_or_else(Vec::new);
+    let deserializer = EventDeserializer::build(
+        config.codec.clone(),
+        connector_default_codec,
+        preprocessor_names,
+    )?;
+
     Ok(SourceManagerBuilder {
         qsize,
-        codec,
-        preprocessors,
-        preprocessor_names,
+        deserializer,
     })
 }
 
@@ -233,11 +357,7 @@ where
     ctx: SourceContext,
     rx: Receiver<SourceMsg>,
     /// the configured codec
-    codec: Box<dyn Codec>,
-    /// the configured pre processors for the default stream
-    preprocessors: Preprocessors,
-    preprocessor_names: Vec<String>,
-    stream_states: BTreeMap<usize, StreamState>,
+    deserializer: EventDeserializer,
     pipelines: HashMap<Cow<'static, str>, Vec<(TremorUrl, pipeline::Addr)>>,
     paused: bool,
     // TODO: add metrics reporter to metrics connector
@@ -253,20 +373,12 @@ where
         builder: SourceManagerBuilder,
         rx: Receiver<SourceMsg>,
     ) -> Self {
-        let SourceManagerBuilder {
-            codec,
-            preprocessors,
-            preprocessor_names,
-            ..
-        } = builder;
+        let SourceManagerBuilder { deserializer, .. } = builder;
         Self {
             source,
             ctx,
             rx,
-            codec,
-            preprocessors,
-            preprocessor_names,
-            stream_states: BTreeMap::new(),
+            deserializer,
             pipelines: HashMap::with_capacity(2),
             paused: false,
         }

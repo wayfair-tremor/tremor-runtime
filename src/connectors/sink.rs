@@ -180,6 +180,7 @@ where
     reply_tx: Sender<AsyncSinkReply>,
 }
 
+// FIXME: implement PauseBehaviour correctly
 impl<T, F> ChannelSink<T, F>
 where
     T: Hash + Eq,
@@ -501,7 +502,7 @@ pub(crate) fn builder(
     qsize: usize,
 ) -> Result<SinkManagerBuilder> {
     // resolve codec and processors
-    let postprocessor_names = config.postprocessors.clone().unwrap_or_else(|| vec![]);
+    let postprocessor_names = config.postprocessors.clone().unwrap_or_else(Vec::new);
     let serializer = EventSerializer::build(
         config.codec.clone(),
         connector_default_codec,
@@ -551,23 +552,23 @@ impl EventSerializer {
         })
     }
 
-    fn drop_stream(&mut self, stream_id: u64) {
+    pub fn drop_stream(&mut self, stream_id: u64) {
         self.streams.remove(&stream_id);
     }
 
     /// clear out all streams - this can lead to data loss
     /// only use when you are sure, all the streams are gone
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.streams.clear()
     }
 
     /// serialize event for the default stream
-    fn serialize(&mut self, value: &Value, ingest_ns: u64) -> Result<Vec<Vec<u8>>> {
+    pub fn serialize(&mut self, value: &Value, ingest_ns: u64) -> Result<Vec<Vec<u8>>> {
         self.serialize_for_stream(value, ingest_ns, DEFAULT_STREAM_ID)
     }
 
     /// serialize event for a certain stream
-    fn serialize_for_stream(
+    pub fn serialize_for_stream(
         &mut self,
         value: &Value,
         ingest_ns: u64,
