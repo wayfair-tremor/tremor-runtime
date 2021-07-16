@@ -249,9 +249,9 @@ where
         data: Vec<u8>,
         meta: Option<StaticValue>, // See: https://github.com/rust-lang/rust/issues/63033
     ) -> Vec<Result<EventPayload>> {
-        let mut results = vec![];
         match self.handle_pp(stream, ingest_ns, data) {
             Ok(data) => {
+                let mut results = Vec::with_capacity(data.len());
                 let meta_value = meta.map_or_else(Value::object, |m| m.0);
                 for d in data {
                     let line_value = EventPayload::try_new::<Option<Error>, _>(d, |mut_data| {
@@ -278,14 +278,14 @@ where
                         }
                     }
                 }
+                results
             }
             Err(e) => {
                 // record preprocessor failures too
                 // TODO: add error context (with error handling update)
-                results.push(Err(e));
+                vec![Err(e)]
             }
         }
-        results
     }
 
     fn needs_pipeline_msg(&self) -> bool {
