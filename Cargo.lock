@@ -2276,7 +2276,7 @@ checksum = "9512782490ab8a5c752851ba49214f9e4d46c78f14a708098d8352cece35b235"
 dependencies = [
  "prost",
  "prost-types",
- "tonic",
+ "tonic 0.4.3",
 ]
 
 [[package]]
@@ -2701,6 +2701,18 @@ dependencies = [
  "tokio 1.6.0",
  "tokio-rustls",
  "webpki",
+]
+
+[[package]]
+name = "hyper-timeout"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb958482e8c7be4bc3cf272a766a2b0bf1a6755e7a6ae777f017a31d11b13b1"
+dependencies = [
+ "hyper 0.14.7",
+ "pin-project-lite 0.2.7",
+ "tokio 1.6.0",
+ "tokio-io-timeout",
 ]
 
 [[package]]
@@ -6084,6 +6096,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-io-timeout"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90c49f106be240de154571dd31fbe48acb10ba6c6dd6f6517ad603abffa42de9"
+dependencies = [
+ "pin-project-lite 0.2.7",
+ "tokio 1.6.0",
+]
+
+[[package]]
 name = "tokio-macros"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6322,10 +6344,38 @@ dependencies = [
  "prost",
  "prost-derive",
  "tokio 1.6.0",
+ "tokio-stream",
+ "tokio-util 0.6.7",
+ "tower",
+ "tower-service",
+ "tracing",
+ "tracing-futures",
+]
+
+[[package]]
+name = "tonic"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b584f064fdfc50017ec39162d5aebce49912f1eb16fd128e04b7f4ce4907c7e5"
+dependencies = [
+ "async-stream",
+ "base64 0.13.0",
+ "bytes 1.0.1",
+ "futures-core",
+ "futures-util",
+ "h2 0.3.3",
+ "http 0.2.4",
+ "http-body 0.4.2",
+ "hyper 0.14.7",
+ "hyper-timeout",
+ "percent-encoding 2.1.0",
+ "pin-project 1.0.7",
+ "tokio 1.6.0",
  "tokio-rustls",
  "tokio-stream",
  "tokio-util 0.6.7",
  "tower",
+ "tower-layer",
  "tower-service",
  "tracing",
  "tracing-futures",
@@ -6522,7 +6572,7 @@ checksum = "d32d9f22b8e6c6f3a9dc9f2b1c893fde999f7d1077e170c7a61f5b1063fed454"
 dependencies = [
  "async-channel",
  "prost",
- "tonic",
+ "tonic 0.4.3",
 ]
 
 [[package]]
@@ -6635,7 +6685,7 @@ dependencies = [
  "test-case",
  "tide",
  "tokio-postgres",
- "tonic",
+ "tonic 0.5.0",
  "tremor-common",
  "tremor-influx",
  "tremor-otelapis",
