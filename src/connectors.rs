@@ -513,6 +513,12 @@ impl Manager {
                             &addr.url, &connector_state
                         );
                     }
+                    Msg::Pause if connector_state != ConnectorState::Paused => {
+                        info!(
+                            "[Connector::{}] Ignoring Pause Msg. Current state: {:?}",
+                            &addr.url, &connector_state
+                        );
+                    }
                     Msg::Pause => {
                         info!("[Connector::{}] Pausing...", &addr.url);
 
